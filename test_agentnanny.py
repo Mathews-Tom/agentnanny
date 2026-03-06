@@ -1666,6 +1666,54 @@ class TestPrune:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# list-groups command
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestListGroups:
+    def test_lists_configured_groups(self, capsys):
+        cfg = {
+            "groups": {
+                "filesystem": ["Read", "Write", "Edit"],
+                "shell": ["Bash"],
+            },
+            "hooks": {},
+            "logging": {},
+        }
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.cmd_list_groups()
+        out = capsys.readouterr().out
+        assert "filesystem" in out
+        assert "Read, Write, Edit" in out
+        assert "shell" in out
+        assert "Bash" in out
+
+    def test_no_groups_configured(self, capsys):
+        cfg = {"groups": {}, "hooks": {}, "logging": {}}
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.cmd_list_groups()
+        out = capsys.readouterr().out
+        assert "No groups configured" in out
+
+    def test_alignment(self, capsys):
+        cfg = {
+            "groups": {
+                "fs": ["Read"],
+                "longname": ["Bash"],
+            },
+            "hooks": {},
+            "logging": {},
+        }
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.cmd_list_groups()
+        out = capsys.readouterr().out
+        lines = [l for l in out.strip().splitlines() if l.strip()]
+        # Both pattern columns should start at the same position
+        positions = [l.index("Read") if "Read" in l else l.index("Bash") for l in lines]
+        assert positions[0] == positions[1]
+
+
 class TestPatternValidation:
     def test_valid_patterns_no_warning(self, capsys):
         agentnanny._validate_patterns(["Bash", "Bash(rm*)", ".*Fetch.*"], "deny")

@@ -1072,6 +1072,19 @@ def cmd_sessions():
         print(f"{scope_id}  age={age}s  {ttl_str}  groups=[{groups}]  tools=[{tools}]")
 
 
+def cmd_list_groups():
+    """List all configured operation groups and their patterns."""
+    cfg = load_config()
+    groups = cfg.get("groups", {})
+    if not groups:
+        print("No groups configured in config.toml")
+        return
+    max_name = max(len(name) for name in groups)
+    for name, patterns in groups.items():
+        pats = ", ".join(patterns)
+        print(f"{name:<{max_name}}  {pats}")
+
+
 def cmd_prune():
     """Remove all expired session policy files."""
     if not SESSION_DIR.exists():
@@ -1138,6 +1151,7 @@ def main():
     p_run.add_argument("command_args", nargs=argparse.REMAINDER, help="Command to run (after --)")
 
     sub.add_parser("sessions", help="List active session policies")
+    sub.add_parser("list-groups", help="Show configured operation groups")
     sub.add_parser("prune", help="Remove expired session policies")
 
     args = parser.parse_args()
@@ -1166,6 +1180,8 @@ def main():
         cmd_run(args.groups, args.tools, args.deny, args.ttl, args.command_args)
     elif args.command == "sessions":
         cmd_sessions()
+    elif args.command == "list-groups":
+        cmd_list_groups()
     elif args.command == "prune":
         cmd_prune()
     else:
