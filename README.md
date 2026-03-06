@@ -124,6 +124,13 @@ python agentnanny.py sessions
 # abc12345  age=3600s  25200s remaining  groups=[filesystem, shell]  tools=[-]
 ```
 
+### prune — remove expired sessions
+
+```bash
+python agentnanny.py prune
+# Pruned 3 expired session(s)
+```
+
 ## Operation Groups
 
 Groups bundle related tools under a name. Defined in `config.toml`:
@@ -170,6 +177,7 @@ eval $(python agentnanny.py activate -g shell -d "Bash(rm*),Bash(curl*|*sh)")
 | `Bash` | Any Bash tool call |
 | `Bash(rm*)` | Bash commands starting with `rm` |
 | `Bash(rm -rf*)` | Bash commands starting with `rm -rf` |
+| `Bash(curl*\|*sh)` | Bash commands starting with `curl` OR ending with `sh` |
 | `Write(/etc/*)` | Write calls to paths under `/etc/` |
 | `WebFetch(*evil.com*)` | WebFetch calls with `evil.com` in the URL |
 | `.*Fetch.*` | Regex against tool name (matches WebFetch) |
@@ -222,6 +230,8 @@ dry_run = false             # log without sending keystrokes
 [logging]
 audit_log = "/tmp/agentnanny.log"
 level = "actions"           # "actions" or "all"
+max_size_bytes = 10485760   # 10 MB — rotates when exceeded
+backup_count = 3            # keep .log.1, .log.2, .log.3
 ```
 
 ### Environment variables
@@ -253,5 +263,5 @@ Expired policies are automatically deleted on next read.
 
 ## Requirements
 
-- Python 3.10+ (stdlib only, no dependencies)
+- Python 3.10+ (stdlib only, no dependencies). Python 3.11+ recommended (uses `tomllib` for robust config parsing; 3.10 falls back to a minimal built-in parser).
 - tmux (daemon mode only)

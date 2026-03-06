@@ -8,12 +8,18 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:
+    tomllib = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -89,7 +95,11 @@ def load_config() -> dict:
     """Load config.toml, with env var overrides."""
     cfg: dict = {"hooks": {}, "daemon": {}, "logging": {}}
     if CONFIG_PATH.exists():
-        cfg = parse_toml(CONFIG_PATH.read_text(encoding="utf-8"))
+        if tomllib is not None:
+            with open(CONFIG_PATH, "rb") as f:
+                cfg = tomllib.load(f)
+        else:
+            cfg = parse_toml(CONFIG_PATH.read_text(encoding="utf-8"))
 
     # Env var overrides
     if v := os.environ.get("AGENTNANNY_SESSION"):
@@ -109,6 +119,18 @@ def load_config() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _glob_to_regex(glob_pat: str) -> str:
+    """Convert a glob pattern to regex, supporting ``*``, ``?``, and ``|`` alternation.
+
+    The ``|`` character splits the pattern into alternatives:
+        ``curl*|*sh`` → matches inputs starting with ``curl`` OR ending with ``sh``.
+    Each alternative is independently converted (``*`` → ``.*``, ``?`` → ``.``).
+    """
+    parts = glob_pat.split("|")
+    regex_parts = [re.escape(p).replace(r"\*", ".*").replace(r"\?", ".") for p in parts]
+    return "|".join(regex_parts)
+
+
 def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool:
     """Check if a tool call matches any deny pattern.
 
@@ -116,6 +138,7 @@ def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool
         "Bash"              — exact tool name match
         "Bash(rm*)"         — tool name + command pattern (glob-style)
         "Bash(rm -rf*)"     — tool name + command prefix
+        "Bash(curl*|*sh)"   — alternation (matches curl… OR …sh)
         ".*dangerous.*"     — regex against tool_name
     """
     for pattern in deny_list:
@@ -125,10 +148,8 @@ def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool
             pat_tool, pat_input = m.group(1), m.group(2)
             if pat_tool != tool_name:
                 continue
-            # Match against the primary input field (command for Bash, etc.)
             input_str = _primary_input(tool_name, tool_input)
-            # Convert glob-style to regex
-            regex = re.escape(pat_input).replace(r"\*", ".*").replace(r"\?", ".")
+            regex = _glob_to_regex(pat_input)
             if re.match(regex, input_str):
                 return True
         else:
@@ -169,12 +190,19 @@ def generate_scope_id() -> str:
     return os.urandom(4).hex()
 
 
+def _secure_dir(path: Path) -> None:
+    """Ensure directory exists with owner-only permissions (700)."""
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(stat.S_IRWXU)
+
+
 def save_session_policy(policy: dict) -> Path:
     """Write a session policy file. Returns the path."""
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    _secure_dir(SESSION_DIR)
     path = SESSION_DIR / f"{policy['scope_id']}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(policy, indent=2), encoding="utf-8")
+    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 600
     tmp.replace(path)
     return path
 
@@ -256,6 +284,7 @@ def matches_allow(tool_name: str, tool_input: dict, allow_patterns: list[str]) -
     Same pattern syntax as matches_deny:
         "Bash"              — exact tool name
         "Bash(ls*)"         — tool name + input pattern
+        "Bash(git status*|git diff*)" — alternation
         ".*"                — regex wildcard (match all)
     """
     for pattern in allow_patterns:
@@ -265,7 +294,7 @@ def matches_allow(tool_name: str, tool_input: dict, allow_patterns: list[str]) -
             if pat_tool != tool_name:
                 continue
             input_str = _primary_input(tool_name, tool_input)
-            regex = re.escape(pat_input).replace(r"\*", ".*").replace(r"\?", ".")
+            regex = _glob_to_regex(pat_input)
             if re.match(regex, input_str):
                 return True
         else:
@@ -284,6 +313,36 @@ def matches_allow(tool_name: str, tool_input: dict, allow_patterns: list[str]) -
 # ---------------------------------------------------------------------------
 
 
+LOG_MAX_SIZE_DEFAULT = 10 * 1024 * 1024  # 10 MB
+LOG_BACKUP_COUNT_DEFAULT = 3
+
+
+def _rotate_log(log_file: Path, cfg: dict) -> None:
+    """Rotate audit log when it exceeds max size."""
+    log_cfg = cfg.get("logging", {})
+    max_size = int(log_cfg.get("max_size_bytes", LOG_MAX_SIZE_DEFAULT))
+    backup_count = int(log_cfg.get("backup_count", LOG_BACKUP_COUNT_DEFAULT))
+
+    if not log_file.exists():
+        return
+    try:
+        if log_file.stat().st_size < max_size:
+            return
+    except OSError:
+        return
+
+    # Rotate: .log.3 → delete, .log.2 → .log.3, .log.1 → .log.2, .log → .log.1
+    for i in range(backup_count, 0, -1):
+        src = log_file.with_suffix(f".log.{i}") if i > 0 else log_file
+        dst = log_file.with_suffix(f".log.{i + 1}")
+        if i == backup_count:
+            src.unlink(missing_ok=True)
+        elif src.exists():
+            src.rename(dst)
+    if log_file.exists():
+        log_file.rename(log_file.with_suffix(f".log.1"))
+
+
 def audit_log(source: str, action: str, tool_name: str, detail: str, cfg: dict | None = None):
     """Append a TSV line to the audit log."""
     cfg = cfg or load_config()
@@ -297,8 +356,13 @@ def audit_log(source: str, action: str, tool_name: str, detail: str, cfg: dict |
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     line = f"{ts}\t{source}\t{action}\t{tool_name}\t{detail}\n"
     try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line)
+        log_file = Path(log_path)
+        _rotate_log(log_file, cfg)
+        fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
     except OSError:
         pass  # Log failure is not fatal
 
@@ -870,6 +934,17 @@ def show_log():
 # ---------------------------------------------------------------------------
 
 
+_VALID_PATTERN_RE = re.compile(r'^(\w+(\(.+\))?|\.\*.*)$')
+
+
+def _validate_patterns(patterns: list[str], label: str) -> None:
+    """Warn about malformed patterns that will silently match nothing."""
+    for pat in patterns:
+        if not _VALID_PATTERN_RE.match(pat):
+            print(f"# Warning: {label} pattern may be malformed: {pat!r}", file=sys.stderr)
+            print(f"#   Expected: ToolName, ToolName(glob*), or regex", file=sys.stderr)
+
+
 def _parse_ttl(ttl_str: str) -> int:
     """Parse a TTL string like '8h', '30m', '3600' into seconds."""
     ttl_str = ttl_str.strip().lower()
@@ -894,6 +969,12 @@ def cmd_activate(groups: str | None, tools: str | None, deny: str | None, ttl: s
     # Validate group names
     if group_names:
         resolve_groups(group_names, cfg)
+
+    # Validate pattern syntax
+    if deny_patterns:
+        _validate_patterns(deny_patterns, "deny")
+    if tool_names:
+        _validate_patterns(tool_names, "tool")
 
     scope_id = generate_scope_id()
     policy = {
@@ -991,6 +1072,29 @@ def cmd_sessions():
         print(f"{scope_id}  age={age}s  {ttl_str}  groups=[{groups}]  tools=[{tools}]")
 
 
+def cmd_prune():
+    """Remove all expired session policy files."""
+    if not SESSION_DIR.exists():
+        print("No session directory")
+        return
+    removed = 0
+    now = datetime.now(timezone.utc)
+    for path in SESSION_DIR.glob("*.json"):
+        try:
+            policy = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            path.unlink(missing_ok=True)
+            removed += 1
+            continue
+        ttl = policy.get("ttl_seconds", 0)
+        if ttl > 0:
+            created = datetime.fromisoformat(policy["created"])
+            if (now - created).total_seconds() > ttl:
+                path.unlink(missing_ok=True)
+                removed += 1
+    print(f"Pruned {removed} expired session(s)")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1034,6 +1138,7 @@ def main():
     p_run.add_argument("command_args", nargs=argparse.REMAINDER, help="Command to run (after --)")
 
     sub.add_parser("sessions", help="List active session policies")
+    sub.add_parser("prune", help="Remove expired session policies")
 
     args = parser.parse_args()
 
@@ -1061,6 +1166,8 @@ def main():
         cmd_run(args.groups, args.tools, args.deny, args.ttl, args.command_args)
     elif args.command == "sessions":
         cmd_sessions()
+    elif args.command == "prune":
+        cmd_prune()
     else:
         parser.print_help()
         raise SystemExit(1)
