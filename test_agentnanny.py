@@ -1012,13 +1012,13 @@ class TestSessionPolicy:
 
     def test_load_nonexistent(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
-            assert agentnanny.load_session_policy("nonexistent") is None
+            assert agentnanny.load_session_policy("00000000") is None
 
     def test_expired_policy_returns_none(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(timespec="seconds")
             policy = {
-                "scope_id": "expired1",
+                "scope_id": "e00e0001",
                 "created": created,
                 "ttl_seconds": 1,
                 "allow_groups": [],
@@ -1026,15 +1026,15 @@ class TestSessionPolicy:
                 "deny": [],
             }
             agentnanny.save_session_policy(policy)
-            assert agentnanny.load_session_policy("expired1") is None
+            assert agentnanny.load_session_policy("e00e0001") is None
             # File should be deleted
-            assert not (tmp_path / "expired1.json").exists()
+            assert not (tmp_path / "e00e0001.json").exists()
 
     def test_no_ttl_never_expires(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(timespec="seconds")
             policy = {
-                "scope_id": "forever1",
+                "scope_id": "f00e0e01",
                 "created": created,
                 "ttl_seconds": 0,
                 "allow_groups": [],
@@ -1042,12 +1042,12 @@ class TestSessionPolicy:
                 "deny": [],
             }
             agentnanny.save_session_policy(policy)
-            assert agentnanny.load_session_policy("forever1") is not None
+            assert agentnanny.load_session_policy("f00e0e01") is not None
 
     def test_delete_policy(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             policy = {
-                "scope_id": "del12345",
+                "scope_id": "de112345",
                 "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "ttl_seconds": 0,
                 "allow_groups": [],
@@ -1055,14 +1055,14 @@ class TestSessionPolicy:
                 "deny": [],
             }
             agentnanny.save_session_policy(policy)
-            assert agentnanny.delete_session_policy("del12345") is True
-            assert agentnanny.delete_session_policy("del12345") is False
+            assert agentnanny.delete_session_policy("de112345") is True
+            assert agentnanny.delete_session_policy("de112345") is False
 
     def test_list_policies(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             for i in range(3):
                 agentnanny.save_session_policy({
-                    "scope_id": f"list{i:04d}",
+                    "scope_id": f"aabb{i:04d}",
                     "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "ttl_seconds": 0,
                     "allow_groups": [],
@@ -1105,7 +1105,7 @@ class TestResolveGroups:
 
     def test_unknown_group_raises(self):
         with pytest.raises(ValueError, match="Unknown group"):
-            agentnanny.resolve_groups(["nonexistent"], self.CFG)
+            agentnanny.resolve_groups(["00000000"], self.CFG)
 
     def test_empty_groups(self):
         result = agentnanny.resolve_groups([], self.CFG)
@@ -1201,14 +1201,14 @@ class TestHandleHookScoped:
     def test_scope_valid_policy_allows(self):
         """Tool in session allow groups gets allowed."""
         policy = {
-            "scope_id": "test1234",
+            "scope_id": "ae5b1234",
             "allow_groups": ["filesystem"],
             "allow_tools": [],
             "deny": [],
         }
         raw = self._run_hook_scoped(
             {"tool_name": "Read", "tool_input": {"file_path": "/tmp/x"}},
-            scope_id="test1234",
+            scope_id="ae5b1234",
             policy=policy,
         )
         result = json.loads(raw)
@@ -1217,14 +1217,14 @@ class TestHandleHookScoped:
     def test_scope_tool_not_in_allow_passthrough(self):
         """Tool not in session allow list → passthrough (empty output)."""
         policy = {
-            "scope_id": "test1234",
+            "scope_id": "ae5b1234",
             "allow_groups": ["filesystem"],
             "allow_tools": [],
             "deny": [],
         }
         raw = self._run_hook_scoped(
             {"tool_name": "WebFetch", "tool_input": {"url": "http://x"}},
-            scope_id="test1234",
+            scope_id="ae5b1234",
             policy=policy,
         )
         assert raw == ""
@@ -1232,14 +1232,14 @@ class TestHandleHookScoped:
     def test_scope_explicit_tool_allows(self):
         """Explicit tool name in allow_tools gets allowed."""
         policy = {
-            "scope_id": "test1234",
+            "scope_id": "ae5b1234",
             "allow_groups": [],
             "allow_tools": ["WebFetch"],
             "deny": [],
         }
         raw = self._run_hook_scoped(
             {"tool_name": "WebFetch", "tool_input": {"url": "http://x"}},
-            scope_id="test1234",
+            scope_id="ae5b1234",
             policy=policy,
         )
         result = json.loads(raw)
@@ -1248,14 +1248,14 @@ class TestHandleHookScoped:
     def test_scope_global_deny_still_applies(self):
         """Global deny list blocks even with valid session scope."""
         policy = {
-            "scope_id": "test1234",
+            "scope_id": "ae5b1234",
             "allow_groups": ["shell"],
             "allow_tools": [],
             "deny": [],
         }
         raw = self._run_hook_scoped(
             {"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}},
-            scope_id="test1234",
+            scope_id="ae5b1234",
             policy=policy,
             global_deny=["Bash(rm*)"],
         )
@@ -1265,14 +1265,14 @@ class TestHandleHookScoped:
     def test_scope_session_deny_applies(self):
         """Session-level deny blocks the tool."""
         policy = {
-            "scope_id": "test1234",
+            "scope_id": "ae5b1234",
             "allow_groups": ["shell"],
             "allow_tools": [],
             "deny": ["Bash(rm*)"],
         }
         raw = self._run_hook_scoped(
             {"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}},
-            scope_id="test1234",
+            scope_id="ae5b1234",
             policy=policy,
         )
         result = json.loads(raw)
@@ -1282,7 +1282,7 @@ class TestHandleHookScoped:
         """Missing policy file → passthrough."""
         raw = self._run_hook_scoped(
             {"tool_name": "Bash", "tool_input": {"command": "ls"}},
-            scope_id="nonexistent",
+            scope_id="00000000",
             policy=None,
         )
         assert raw == ""
@@ -1292,7 +1292,7 @@ class TestHandleHookScoped:
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(timespec="seconds")
             agentnanny.save_session_policy({
-                "scope_id": "expired1",
+                "scope_id": "e00e0001",
                 "created": created,
                 "ttl_seconds": 1,
                 "allow_groups": ["shell"],
@@ -1301,7 +1301,7 @@ class TestHandleHookScoped:
             })
             raw = self._run_hook_scoped(
                 {"tool_name": "Bash", "tool_input": {"command": "ls"}},
-                scope_id="expired1",
+                scope_id="e00e0001",
             )
             assert raw == ""
 
@@ -1343,19 +1343,19 @@ class TestActivateDeactivate:
         with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
              patch.object(agentnanny, "load_config", return_value=cfg):
             with pytest.raises(ValueError, match="Unknown group"):
-                agentnanny.cmd_activate("nonexistent", None, None, "0")
+                agentnanny.cmd_activate("00000000", None, None, "0")
 
     def test_deactivate_removes_policy(self, tmp_path, capsys):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             agentnanny.save_session_policy({
-                "scope_id": "deact123",
+                "scope_id": "dea01234",
                 "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "ttl_seconds": 0,
                 "allow_groups": [],
                 "allow_tools": [],
                 "deny": [],
             })
-            agentnanny.cmd_deactivate("deact123")
+            agentnanny.cmd_deactivate("dea01234")
 
         assert not (tmp_path / "deact123.json").exists()
         out = capsys.readouterr().out
@@ -1363,9 +1363,9 @@ class TestActivateDeactivate:
 
     def test_deactivate_from_env(self, tmp_path, capsys):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.dict(os.environ, {"AGENTNANNY_SCOPE": "fromenv1"}):
+             patch.dict(os.environ, {"AGENTNANNY_SCOPE": "f00fba11"}):
             agentnanny.save_session_policy({
-                "scope_id": "fromenv1",
+                "scope_id": "f00fba11",
                 "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "ttl_seconds": 0,
                 "allow_groups": [],
@@ -1437,7 +1437,7 @@ class TestSessions:
     def test_list_shows_policies(self, tmp_path, capsys):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             agentnanny.save_session_policy({
-                "scope_id": "sess1234",
+                "scope_id": "5e551234",
                 "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "ttl_seconds": 0,
                 "allow_groups": ["shell"],
@@ -1446,7 +1446,7 @@ class TestSessions:
             })
             agentnanny.cmd_sessions()
         out = capsys.readouterr().out
-        assert "sess1234" in out
+        assert "5e551234" in out
         assert "shell" in out
 
 
@@ -1481,7 +1481,7 @@ class TestFilePermissions:
     def test_session_file_is_owner_only(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             path = agentnanny.save_session_policy({
-                "scope_id": "perm1234",
+                "scope_id": "be001234",
                 "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "ttl_seconds": 0,
                 "allow_groups": [],
@@ -1491,11 +1491,29 @@ class TestFilePermissions:
         mode = path.stat().st_mode
         assert mode & 0o777 == 0o600
 
+    def test_tmp_file_never_world_readable(self, tmp_path):
+        """Verify no race window where .tmp is world-readable."""
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            # Save creates .tmp then renames — .tmp shouldn't exist after
+            agentnanny.save_session_policy({
+                "scope_id": "face1234",
+                "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "ttl_seconds": 0,
+                "allow_groups": [],
+                "allow_tools": [],
+                "deny": [],
+            })
+            # .tmp file should not remain
+            assert not (tmp_path / "face1234.tmp").exists()
+            # Final file should be 0o600
+            mode = (tmp_path / "face1234.json").stat().st_mode
+            assert mode & 0o777 == 0o600
+
     def test_session_dir_is_owner_only(self, tmp_path):
         session_dir = tmp_path / "sessions"
         with patch.object(agentnanny, "SESSION_DIR", session_dir):
             agentnanny.save_session_policy({
-                "scope_id": "perm5678",
+                "scope_id": "be005678",
                 "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "ttl_seconds": 0,
                 "allow_groups": [],
@@ -1621,7 +1639,7 @@ class TestPrune:
         from datetime import timedelta
 
         expired_policy = {
-            "scope_id": "expired1",
+            "scope_id": "e00e0001",
             "created": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(timespec="seconds"),
             "ttl_seconds": 3600,
             "allow_groups": [],
@@ -1629,7 +1647,7 @@ class TestPrune:
             "deny": [],
         }
         active_policy = {
-            "scope_id": "active01",
+            "scope_id": "ac00ac01",
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "ttl_seconds": 3600,
             "allow_groups": [],
@@ -1643,11 +1661,11 @@ class TestPrune:
 
         out = capsys.readouterr().out
         assert "Pruned 1 expired" in out
-        assert not (tmp_path / "expired1.json").exists()
-        assert (tmp_path / "active01.json").exists()
+        assert not (tmp_path / "e00e0001.json").exists()
+        assert (tmp_path / "ac00ac01.json").exists()
 
     def test_prune_no_directory(self, tmp_path, capsys):
-        nonexistent = tmp_path / "nonexistent"
+        nonexistent = tmp_path / "00000000"
         with patch.object(agentnanny, "SESSION_DIR", nonexistent):
             agentnanny.cmd_prune()
         assert "No session directory" in capsys.readouterr().out
@@ -1779,6 +1797,52 @@ class TestListGroups:
         # Both pattern columns should start at the same position
         positions = [l.index("Read") if "Read" in l else l.index("Bash") for l in lines]
         assert positions[0] == positions[1]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Scope ID validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestScopeIdValidation:
+    def test_valid_scope_id(self):
+        assert agentnanny._valid_scope_id("a1b2c3d4") is True
+
+    def test_valid_scope_id_all_hex_chars(self):
+        assert agentnanny._valid_scope_id("0123abcd") is True
+
+    def test_invalid_scope_id_path_traversal(self):
+        assert agentnanny._valid_scope_id("../../etc") is False
+
+    def test_invalid_scope_id_too_long(self):
+        assert agentnanny._valid_scope_id("a1b2c3d4e5") is False
+
+    def test_invalid_scope_id_too_short(self):
+        assert agentnanny._valid_scope_id("a1b2") is False
+
+    def test_invalid_scope_id_uppercase(self):
+        assert agentnanny._valid_scope_id("A1B2C3D4") is False
+
+    def test_invalid_scope_id_non_hex(self):
+        assert agentnanny._valid_scope_id("ghijklmn") is False
+
+    def test_invalid_scope_id_empty(self):
+        assert agentnanny._valid_scope_id("") is False
+
+    def test_load_rejects_invalid_scope_id(self, tmp_path):
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            result = agentnanny.load_session_policy("../../etc/passwd")
+            assert result is None
+
+    def test_delete_rejects_invalid_scope_id(self, tmp_path):
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            result = agentnanny.delete_session_policy("../../etc/passwd")
+            assert result is False
+
+    def test_generate_scope_id_is_valid(self):
+        for _ in range(100):
+            sid = agentnanny.generate_scope_id()
+            assert agentnanny._valid_scope_id(sid), f"Generated invalid scope_id: {sid}"
 
 
 class TestPatternValidation:
