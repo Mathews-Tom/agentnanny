@@ -851,18 +851,48 @@ def show_status():
         print(f"Session policies: {len(policies)} active")
 
 
-def show_log():
-    """Tail the audit log."""
+def show_log(lines_count: int = 50, output_format: str = "tsv",
+             filter_tool: str | None = None, filter_action: str | None = None):
+    """Tail the audit log with optional filtering and format selection."""
     cfg = load_config()
     log_path = cfg.get("logging", {}).get("audit_log", "/tmp/agentnanny.log")
     if not Path(log_path).exists():
         print(f"No log file at {log_path}")
         return
     with open(log_path, encoding="utf-8") as f:
-        lines = f.readlines()
-    # Show last 50 lines
-    for line in lines[-50:]:
-        print(line, end="")
+        all_lines = f.readlines()
+
+    # Parse and filter
+    entries: list[dict[str, str]] = []
+    for line in all_lines:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split("\t", 4)
+        if len(parts) < 5:
+            continue
+        entry = {
+            "timestamp": parts[0],
+            "source": parts[1],
+            "action": parts[2],
+            "tool": parts[3],
+            "detail": parts[4],
+        }
+        if filter_tool and filter_tool.lower() not in entry["tool"].lower():
+            continue
+        if filter_action and filter_action.lower() != entry["action"].lower():
+            continue
+        entries.append(entry)
+
+    # Take last N entries
+    entries = entries[-lines_count:]
+
+    if output_format == "json":
+        json.dump(entries, sys.stdout, indent=2)
+        print()  # trailing newline
+    else:
+        for entry in entries:
+            print(f"{entry['timestamp']}\t{entry['source']}\t{entry['action']}\t{entry['tool']}\t{entry['detail']}")
 
 
 # ---------------------------------------------------------------------------
@@ -1015,7 +1045,11 @@ def main():
 
     sub.add_parser("stop", help="Stop tmux daemon")
     sub.add_parser("status", help="Show hook + daemon status")
-    sub.add_parser("log", help="Tail audit log")
+    p_log = sub.add_parser("log", help="Tail audit log")
+    p_log.add_argument("--lines", "-n", type=int, default=50, help="Number of lines to show (default: 50)")
+    p_log.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+    p_log.add_argument("--tool", default=None, help="Filter by tool name")
+    p_log.add_argument("--action", default=None, help="Filter by action (allowed, denied, approved, expanded)")
 
     p_activate = sub.add_parser("activate", help="Create a session policy (prints export command)")
     p_activate.add_argument("--groups", "-g", default=None, help="Comma-separated group names")
@@ -1052,7 +1086,12 @@ def main():
     elif args.command == "status":
         show_status()
     elif args.command == "log":
-        show_log()
+        show_log(
+            lines_count=args.lines,
+            output_format="json" if args.json_output else "tsv",
+            filter_tool=args.tool,
+            filter_action=args.action,
+        )
     elif args.command == "activate":
         cmd_activate(args.groups, args.tools, args.deny, args.ttl)
     elif args.command == "deactivate":
