@@ -1072,6 +1072,44 @@ def cmd_sessions():
         print(f"{scope_id}  age={age}s  {ttl_str}  groups=[{groups}]  tools=[{tools}]")
 
 
+def cmd_explain(scope_id: str | None):
+    """Show detailed information about a session policy."""
+    scope_id = scope_id or os.environ.get("AGENTNANNY_SCOPE")
+    if not scope_id:
+        print("No scope ID provided and AGENTNANNY_SCOPE not set", file=sys.stderr)
+        raise SystemExit(1)
+    policy = load_session_policy(scope_id)
+    if policy is None:
+        print(f"No active session policy for {scope_id}", file=sys.stderr)
+        raise SystemExit(1)
+    now = datetime.now(timezone.utc)
+    created = datetime.fromisoformat(policy["created"])
+    age = int((now - created).total_seconds())
+    ttl = policy.get("ttl_seconds", 0)
+    groups = policy.get("allow_groups", [])
+    tools = policy.get("allow_tools", [])
+    deny = policy.get("deny", [])
+
+    print(f"Scope:    {scope_id}")
+    print(f"Created:  {policy['created']}")
+    if ttl:
+        remaining = max(0, ttl - age)
+        print(f"TTL:      {ttl}s ({remaining}s remaining)")
+    else:
+        print(f"TTL:      none (no expiry)")
+    print(f"Groups:   {', '.join(groups) if groups else '-'}")
+    if groups:
+        cfg = load_config()
+        groups_cfg = cfg.get("groups", {})
+        for g in groups:
+            pats = groups_cfg.get(g, [])
+            if pats:
+                print(f"  {g}: {', '.join(pats)}")
+    print(f"Tools:    {', '.join(tools) if tools else '-'}")
+    print(f"Deny:     {', '.join(deny) if deny else '-'}")
+    print(f"Status:   {'ACTIVE' if not ttl or age < ttl else 'EXPIRED'}")
+
+
 def cmd_list_groups():
     """List all configured operation groups and their patterns."""
     cfg = load_config()
@@ -1152,6 +1190,9 @@ def main():
 
     sub.add_parser("sessions", help="List active session policies")
     sub.add_parser("list-groups", help="Show configured operation groups")
+
+    p_explain = sub.add_parser("explain", help="Show details of a session policy")
+    p_explain.add_argument("scope_id", nargs="?", default=None, help="Scope ID (default: from AGENTNANNY_SCOPE)")
     sub.add_parser("prune", help="Remove expired session policies")
 
     args = parser.parse_args()
@@ -1182,6 +1223,8 @@ def main():
         cmd_sessions()
     elif args.command == "list-groups":
         cmd_list_groups()
+    elif args.command == "explain":
+        cmd_explain(args.scope_id)
     elif args.command == "prune":
         cmd_prune()
     else:

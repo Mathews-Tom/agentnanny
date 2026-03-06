@@ -1667,6 +1667,73 @@ class TestPrune:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# explain command
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestExplain:
+    def _make_policy(self, scope_id="abc12345", ttl=3600, groups=None, tools=None, deny=None):
+        return {
+            "scope_id": scope_id,
+            "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "ttl_seconds": ttl,
+            "allow_groups": groups or [],
+            "allow_tools": tools or [],
+            "deny": deny or [],
+        }
+
+    def test_explain_shows_all_fields(self, tmp_path, capsys):
+        cfg = {
+            "groups": {"filesystem": ["Read", "Write"]},
+            "hooks": {},
+            "logging": {"audit_log": os.devnull},
+        }
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg):
+            policy = self._make_policy(groups=["filesystem"], deny=["Bash(rm*)"])
+            agentnanny.save_session_policy(policy)
+            agentnanny.cmd_explain("abc12345")
+        out = capsys.readouterr().out
+        assert "Scope:    abc12345" in out
+        assert "Groups:   filesystem" in out
+        assert "filesystem: Read, Write" in out
+        assert "Deny:     Bash(rm*)" in out
+        assert "ACTIVE" in out
+
+    def test_explain_no_ttl(self, tmp_path, capsys):
+        cfg = {"groups": {}, "hooks": {}, "logging": {"audit_log": os.devnull}}
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg):
+            policy = self._make_policy(ttl=0)
+            agentnanny.save_session_policy(policy)
+            agentnanny.cmd_explain("abc12345")
+        out = capsys.readouterr().out
+        assert "no expiry" in out
+
+    def test_explain_from_env(self, tmp_path, capsys):
+        cfg = {"groups": {}, "hooks": {}, "logging": {"audit_log": os.devnull}}
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.dict(os.environ, {"AGENTNANNY_SCOPE": "abc12345"}):
+            policy = self._make_policy()
+            agentnanny.save_session_policy(policy)
+            agentnanny.cmd_explain(None)
+        out = capsys.readouterr().out
+        assert "abc12345" in out
+
+    def test_explain_missing_scope(self, capsys):
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("AGENTNANNY_SCOPE", None)
+            with pytest.raises(SystemExit):
+                agentnanny.cmd_explain(None)
+
+    def test_explain_missing_policy(self, tmp_path):
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            with pytest.raises(SystemExit):
+                agentnanny.cmd_explain("abc12345")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # list-groups command
 # ═══════════════════════════════════════════════════════════════════════════
 
