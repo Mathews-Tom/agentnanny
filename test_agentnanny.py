@@ -2262,3 +2262,143 @@ class TestExplain:
         assert "Read" in out
         assert "Write" in out
         assert "Edit" in out
+# evaluate_policy — pure dry-run evaluation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestEvaluatePolicy:
+    def test_global_deny_blocks(self):
+        cfg = {"hooks": {"deny": ["Bash"]}}
+        verdict, reason = agentnanny.evaluate_policy("Bash", {}, cfg)
+        assert verdict == "deny"
+        assert "global deny" in reason
+
+    def test_session_deny_blocks(self, tmp_path):
+        scope_id = "ab12cd34"
+        policy = {
+            "scope_id": scope_id,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 0,
+            "allow_tools": ["Bash"],
+            "allow_groups": [],
+            "deny": ["Bash(rm*)"],
+        }
+        session_dir = tmp_path / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"{scope_id}.json").write_text(json.dumps(policy))
+        cfg = {"hooks": {}}
+        with patch.object(agentnanny, "SESSION_DIR", session_dir):
+            verdict, reason = agentnanny.evaluate_policy(
+                "Bash", {"command": "rm -rf /"}, cfg, scope_id,
+            )
+        assert verdict == "deny"
+        assert "session deny" in reason
+
+    def test_session_allow_permits(self, tmp_path):
+        scope_id = "aa11bb22"
+        policy = {
+            "scope_id": scope_id,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 0,
+            "allow_tools": ["Read", "Glob"],
+            "allow_groups": [],
+            "deny": [],
+        }
+        session_dir = tmp_path / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"{scope_id}.json").write_text(json.dumps(policy))
+        cfg = {"hooks": {}}
+        with patch.object(agentnanny, "SESSION_DIR", session_dir):
+            verdict, reason = agentnanny.evaluate_policy("Read", {}, cfg, scope_id)
+        assert verdict == "allow"
+        assert "allowed by session" in reason
+
+    def test_passthrough_no_scope(self):
+        cfg = {"hooks": {}}
+        verdict, reason = agentnanny.evaluate_policy("Bash", {}, cfg, None)
+        assert verdict == "passthrough"
+        assert "no scope" in reason
+
+    def test_passthrough_not_in_allow(self, tmp_path):
+        scope_id = "cc33dd44"
+        policy = {
+            "scope_id": scope_id,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 0,
+            "allow_tools": ["Read"],
+            "allow_groups": [],
+            "deny": [],
+        }
+        session_dir = tmp_path / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"{scope_id}.json").write_text(json.dumps(policy))
+        cfg = {"hooks": {}}
+        with patch.object(agentnanny, "SESSION_DIR", session_dir):
+            verdict, reason = agentnanny.evaluate_policy("Bash", {}, cfg, scope_id)
+        assert verdict == "passthrough"
+        assert "not in session allow" in reason
+
+    def test_global_deny_trumps_session_allow(self, tmp_path):
+        scope_id = "ee55ff66"
+        policy = {
+            "scope_id": scope_id,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 0,
+            "allow_tools": ["Bash"],
+            "allow_groups": [],
+            "deny": [],
+        }
+        session_dir = tmp_path / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"{scope_id}.json").write_text(json.dumps(policy))
+        cfg = {"hooks": {"deny": ["Bash"]}}
+        with patch.object(agentnanny, "SESSION_DIR", session_dir):
+            verdict, reason = agentnanny.evaluate_policy("Bash", {}, cfg, scope_id)
+        assert verdict == "deny"
+        assert "global deny" in reason
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# cmd_test_policy — CLI wrapper
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCmdTestPolicy:
+    def test_cli_deny_output(self, capsys):
+        cfg = {"hooks": {"deny": ["Bash"]}}
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.cmd_test_policy("Bash", "{}", None)
+        out = capsys.readouterr().out
+        assert "deny" in out
+
+    def test_cli_allow_output(self, tmp_path, capsys):
+        scope_id = "11aa22bb"
+        policy = {
+            "scope_id": scope_id,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 0,
+            "allow_tools": ["Read"],
+            "allow_groups": [],
+            "deny": [],
+        }
+        session_dir = tmp_path / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"{scope_id}.json").write_text(json.dumps(policy))
+        cfg = {"hooks": {}}
+        with patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.object(agentnanny, "SESSION_DIR", session_dir):
+            agentnanny.cmd_test_policy("Read", "{}", scope_id)
+        out = capsys.readouterr().out
+        assert "allow" in out
+
+    def test_cli_passthrough_output(self, capsys):
+        cfg = {"hooks": {}}
+        with patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.dict(os.environ, {}, clear=False):
+            # Ensure no AGENTNANNY_SCOPE in env
+            env = os.environ.copy()
+            env.pop("AGENTNANNY_SCOPE", None)
+            with patch.dict(os.environ, env, clear=True):
+                agentnanny.cmd_test_policy("Bash", "{}", None)
+        out = capsys.readouterr().out
+        assert "passthrough" in out
