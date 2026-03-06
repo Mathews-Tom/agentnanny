@@ -898,6 +898,100 @@ class TestAuditLog:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# show_log filtering and output
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+SAMPLE_LOG = (
+    "2026-03-07T10:00:00+00:00\thook\tallowed\tBash\tls -la (session abc12345)\n"
+    "2026-03-07T10:00:01+00:00\thook\tdenied\tBash\trm -rf / (session abc12345)\n"
+    "2026-03-07T10:00:02+00:00\thook\tallowed\tRead\t/tmp/x (session abc12345)\n"
+    "2026-03-07T10:00:03+00:00\tdaemon\tapproved\tpermission\tpane=%1 opts=3\n"
+    "2026-03-07T10:00:04+00:00\thook\tallowed\tWebFetch\thttp://example.com\n"
+)
+
+
+class TestShowLog:
+    def _make_cfg(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        log_file.write_text(SAMPLE_LOG, encoding="utf-8")
+        return {"logging": {"audit_log": str(log_file)}}
+
+    def test_show_log_default(self, tmp_path, capsys):
+        cfg = self._make_cfg(tmp_path)
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.show_log()
+        out = capsys.readouterr().out
+        assert "Bash" in out
+        assert "Read" in out
+        assert "WebFetch" in out
+        assert out.count("\n") == 5
+
+    def test_show_log_lines_limit(self, tmp_path, capsys):
+        cfg = self._make_cfg(tmp_path)
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.show_log(lines_count=2)
+        out = capsys.readouterr().out
+        assert out.count("\n") == 2
+        # Should be the last 2 entries (approved + WebFetch)
+        assert "approved" in out
+        assert "WebFetch" in out
+
+    def test_show_log_json_output(self, tmp_path, capsys):
+        cfg = self._make_cfg(tmp_path)
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.show_log(output_format="json")
+        out = capsys.readouterr().out
+        entries = json.loads(out)
+        assert isinstance(entries, list)
+        assert len(entries) == 5
+        assert entries[0]["tool"] == "Bash"
+
+    def test_show_log_filter_tool(self, tmp_path, capsys):
+        cfg = self._make_cfg(tmp_path)
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.show_log(filter_tool="Bash")
+        out = capsys.readouterr().out
+        assert out.count("\n") == 2
+        assert "Read" not in out
+        assert "WebFetch" not in out
+
+    def test_show_log_filter_action(self, tmp_path, capsys):
+        cfg = self._make_cfg(tmp_path)
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.show_log(filter_action="denied")
+        out = capsys.readouterr().out
+        assert out.count("\n") == 1
+        assert "denied" in out
+        assert "rm -rf" in out
+
+    def test_show_log_combined_filters(self, tmp_path, capsys):
+        cfg = self._make_cfg(tmp_path)
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.show_log(filter_tool="Bash", filter_action="allowed")
+        out = capsys.readouterr().out
+        assert out.count("\n") == 1
+        assert "ls -la" in out
+
+    def test_show_log_no_file(self, tmp_path, capsys):
+        cfg = {"logging": {"audit_log": str(tmp_path / "nonexistent.log")}}
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.show_log()
+        out = capsys.readouterr().out
+        assert "No log file" in out
+
+    def test_show_log_json_with_filter(self, tmp_path, capsys):
+        cfg = self._make_cfg(tmp_path)
+        with patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.show_log(output_format="json", filter_tool="Read")
+        out = capsys.readouterr().out
+        entries = json.loads(out)
+        assert len(entries) == 1
+        assert entries[0]["tool"] == "Read"
+        assert entries[0]["action"] == "allowed"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Config loading
 # ═══════════════════════════════════════════════════════════════════════════
 
