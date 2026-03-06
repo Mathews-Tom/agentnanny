@@ -1088,6 +1088,127 @@ def cmd_sessions():
         print(f"{scope_id}  age={age}s  {ttl_str}  groups=[{groups}]  tools=[{tools}]")
 
 
+def evaluate_policy(
+    tool_name: str,
+    tool_input: dict,
+    groups: list[str] | None = None,
+    tools: list[str] | None = None,
+    deny: list[str] | None = None,
+    cfg: dict | None = None,
+) -> tuple[str, str]:
+    """Evaluate a tool call against a policy without side effects.
+
+    Returns (verdict, reason) where verdict is "ALLOWED", "DENIED", or "PASSTHROUGH".
+    """
+    cfg = cfg or load_config()
+    global_deny = cfg.get("hooks", {}).get("deny", [])
+
+    # Check global deny
+    if matches_deny(tool_name, tool_input, global_deny):
+        for pat in global_deny:
+            m = re.match(r'^(\w+)\((.+)\)$', pat)
+            if m:
+                if m.group(1) == tool_name:
+                    input_str = _primary_input(tool_name, tool_input)
+                    regex = _glob_to_regex(m.group(2))
+                    if re.match(regex, input_str):
+                        return ("DENIED", f"global deny: {pat}")
+            elif pat == tool_name or (re.fullmatch(pat, tool_name) if not re.error else False):
+                return ("DENIED", f"global deny: {pat}")
+        return ("DENIED", "global deny list")
+
+    # Check session deny
+    deny_patterns = deny or []
+    if deny_patterns and matches_deny(tool_name, tool_input, deny_patterns):
+        for pat in deny_patterns:
+            m = re.match(r'^(\w+)\((.+)\)$', pat)
+            if m:
+                if m.group(1) == tool_name:
+                    input_str = _primary_input(tool_name, tool_input)
+                    regex = _glob_to_regex(m.group(2))
+                    if re.match(regex, input_str):
+                        return ("DENIED", f"session deny: {pat}")
+            elif pat == tool_name:
+                return ("DENIED", f"session deny: {pat}")
+        return ("DENIED", "session deny list")
+
+    # Build allow list
+    allow_patterns: list[str] = list(tools or [])
+    group_names = groups or []
+    if group_names:
+        allow_patterns.extend(resolve_groups(group_names, cfg))
+
+    if not allow_patterns:
+        return ("PASSTHROUGH", "no allow patterns configured")
+
+    if matches_allow(tool_name, tool_input, allow_patterns):
+        for pat in allow_patterns:
+            m = re.match(r'^(\w+)\((.+)\)$', pat)
+            if m:
+                if m.group(1) == tool_name:
+                    input_str = _primary_input(tool_name, tool_input)
+                    regex = _glob_to_regex(m.group(2))
+                    if re.match(regex, input_str):
+                        return ("ALLOWED", f"allow pattern: {pat}")
+            elif pat == tool_name:
+                return ("ALLOWED", f"allow pattern: {pat}")
+            else:
+                try:
+                    if re.fullmatch(pat, tool_name):
+                        return ("ALLOWED", f"allow regex: {pat}")
+                except re.error:
+                    pass
+        return ("ALLOWED", "allow list")
+
+    return ("PASSTHROUGH", "tool not in allow list")
+
+
+def cmd_test_policy(groups: str | None, tools: str | None, deny: str | None, tool_call: str):
+    """Dry-run a tool call against a policy and show the verdict."""
+    cfg = load_config()
+
+    group_names = [g.strip() for g in groups.split(",")] if groups else []
+    tool_names = [t.strip() for t in tools.split(",")] if tools else []
+    deny_patterns = [d.strip() for d in deny.split(",")] if deny else []
+
+    # Validate groups
+    if group_names:
+        resolve_groups(group_names, cfg)
+
+    # Parse tool call: "Bash(ls -la)" or "Read" or "Read(/tmp/x)"
+    m = re.match(r'^(\w+)(?:\((.+)\))?$', tool_call)
+    if not m:
+        print(f"Invalid tool call format: {tool_call!r}", file=sys.stderr)
+        print("Expected: ToolName or ToolName(input)", file=sys.stderr)
+        raise SystemExit(1)
+
+    tool_name = m.group(1)
+    raw_input = m.group(2) or ""
+
+    # Build tool_input dict
+    tool_input: dict = {}
+    if raw_input:
+        if tool_name == "Bash":
+            tool_input = {"command": raw_input}
+        elif tool_name in ("Write", "Edit", "Read"):
+            tool_input = {"file_path": raw_input}
+        elif tool_name == "WebFetch":
+            tool_input = {"url": raw_input}
+        else:
+            tool_input = {"input": raw_input}
+
+    verdict, reason = evaluate_policy(
+        tool_name, tool_input,
+        groups=group_names or None,
+        tools=tool_names or None,
+        deny=deny_patterns or None,
+        cfg=cfg,
+    )
+    print(f"{verdict}  {reason}")
+    if verdict == "DENIED":
+        raise SystemExit(1)
+
+
 def cmd_explain(scope_id: str | None):
     """Show detailed information about a session policy."""
     scope_id = scope_id or os.environ.get("AGENTNANNY_SCOPE")
@@ -1211,6 +1332,12 @@ def main():
     p_explain.add_argument("scope_id", nargs="?", default=None, help="Scope ID (default: from AGENTNANNY_SCOPE)")
     sub.add_parser("prune", help="Remove expired session policies")
 
+    p_test = sub.add_parser("test-policy", help="Dry-run a tool call against a policy")
+    p_test.add_argument("--groups", "-g", default=None, help="Comma-separated group names")
+    p_test.add_argument("--tools", "-t", default=None, help="Comma-separated tool names")
+    p_test.add_argument("--deny", "-d", default=None, help="Comma-separated deny patterns")
+    p_test.add_argument("tool_call", help='Tool call to test (e.g. "Bash(rm -rf /)")')
+
     args = parser.parse_args()
 
     if args.command == "hook":
@@ -1243,6 +1370,8 @@ def main():
         cmd_explain(args.scope_id)
     elif args.command == "prune":
         cmd_prune()
+    elif args.command == "test-policy":
+        cmd_test_policy(args.groups, args.tools, args.deny, args.tool_call)
     else:
         parser.print_help()
         raise SystemExit(1)
