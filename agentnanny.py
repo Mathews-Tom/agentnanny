@@ -91,8 +91,31 @@ def _parse_toml_value(raw: str):
 # ---------------------------------------------------------------------------
 
 
+def _merge_project_config(base: dict, project: dict) -> None:
+    """Merge project-local config into base config (mutates base).
+
+    Rules:
+    - hooks.deny: project deny patterns are APPENDED to global deny (additive)
+    - groups: project groups OVERRIDE global groups of the same name,
+      new groups are added
+    - Other sections (daemon, logging) are NOT overridden by project config
+    """
+    # Merge deny lists (additive)
+    if "hooks" in project:
+        proj_deny = project["hooks"].get("deny", [])
+        if proj_deny:
+            base_deny = base.setdefault("hooks", {}).setdefault("deny", [])
+            base_deny.extend(proj_deny)
+
+    # Merge groups (project overrides same-name, adds new)
+    if "groups" in project:
+        base_groups = base.setdefault("groups", {})
+        for name, patterns in project["groups"].items():
+            base_groups[name] = patterns
+
+
 def load_config() -> dict:
-    """Load config.toml, with env var overrides."""
+    """Load config.toml, with project-local and env var overrides."""
     cfg: dict = {"hooks": {}, "daemon": {}, "logging": {}}
     if CONFIG_PATH.exists():
         if tomllib is not None:
@@ -100,6 +123,16 @@ def load_config() -> dict:
                 cfg = tomllib.load(f)
         else:
             cfg = parse_toml(CONFIG_PATH.read_text(encoding="utf-8"))
+
+    # Project-local config — merges on top of global
+    project_config = Path.cwd() / ".claude" / "agentnanny.toml"
+    if project_config.exists():
+        if tomllib is not None:
+            with open(project_config, "rb") as f:
+                proj_cfg = tomllib.load(f)
+        else:
+            proj_cfg = parse_toml(project_config.read_text(encoding="utf-8"))
+        _merge_project_config(cfg, proj_cfg)
 
     # Env var overrides
     if v := os.environ.get("AGENTNANNY_SESSION"):

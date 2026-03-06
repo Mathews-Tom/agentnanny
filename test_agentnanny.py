@@ -2084,3 +2084,119 @@ class TestPatternValidation:
         agentnanny._validate_patterns(["*"], "deny")
         err = capsys.readouterr().err
         assert "Warning" in err
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Project-local config
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestProjectConfig:
+    def test_merge_deny_is_additive(self):
+        base = {"hooks": {"deny": ["A"]}}
+        project = {"hooks": {"deny": ["B"]}}
+        agentnanny._merge_project_config(base, project)
+        assert base["hooks"]["deny"] == ["A", "B"]
+
+    def test_merge_groups_override(self):
+        base = {"groups": {"fs": ["Read"]}}
+        project = {"groups": {"fs": ["Read", "Write"]}}
+        agentnanny._merge_project_config(base, project)
+        assert base["groups"]["fs"] == ["Read", "Write"]
+
+    def test_merge_groups_adds_new(self):
+        base = {"groups": {"fs": ["Read"]}}
+        project = {"groups": {"ci": ["Bash(npm test*)"]}}
+        agentnanny._merge_project_config(base, project)
+        assert base["groups"]["ci"] == ["Bash(npm test*)"]
+        assert base["groups"]["fs"] == ["Read"]
+
+    def test_merge_ignores_daemon_logging(self):
+        base = {
+            "daemon": {"session": "claude", "poll_interval": 0.3},
+            "logging": {"level": "actions"},
+        }
+        project = {
+            "daemon": {"session": "hacked", "poll_interval": 9.9},
+            "logging": {"level": "all", "audit_log": "/tmp/evil.log"},
+        }
+        agentnanny._merge_project_config(base, project)
+        assert base["daemon"]["session"] == "claude"
+        assert base["daemon"]["poll_interval"] == 0.3
+        assert base["logging"]["level"] == "actions"
+        assert "audit_log" not in base["logging"]
+
+    def test_load_config_with_project_file(self, tmp_path):
+        # Global config
+        config_file = tmp_path / "global_config.toml"
+        config_file.write_text(
+            '[hooks]\ndeny = ["Bash(rm*)"]\n\n[groups.fs]\n',
+            encoding="utf-8",
+        )
+        # Rewrite with parse_toml-compatible format
+        config_file.write_text(
+            '[hooks]\ndeny = ["Bash(rm*)"]\n\n[groups]\nfs = ["Read"]\n',
+            encoding="utf-8",
+        )
+
+        # Project config
+        proj_claude = tmp_path / ".claude"
+        proj_claude.mkdir()
+        proj_config = proj_claude / "agentnanny.toml"
+        proj_config.write_text(
+            '[hooks]\ndeny = ["WebFetch"]\n\n[groups]\nci = ["Bash(npm*)"]\n',
+            encoding="utf-8",
+        )
+
+        with patch.object(agentnanny, "CONFIG_PATH", config_file), \
+             patch("pathlib.Path.cwd", return_value=tmp_path):
+            cfg = agentnanny.load_config()
+
+        assert "Bash(rm*)" in cfg["hooks"]["deny"]
+        assert "WebFetch" in cfg["hooks"]["deny"]
+        assert cfg["groups"]["ci"] == ["Bash(npm*)"]
+
+    def test_load_config_without_project_file(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[hooks]\ndeny = ["Bash(rm*)"]\n',
+            encoding="utf-8",
+        )
+
+        with patch.object(agentnanny, "CONFIG_PATH", config_file), \
+             patch("pathlib.Path.cwd", return_value=tmp_path):
+            cfg = agentnanny.load_config()
+
+        assert cfg["hooks"]["deny"] == ["Bash(rm*)"]
+
+    def test_project_deny_evaluated_by_hook(self, tmp_path):
+        """Integration test: project deny blocks a tool call that global config allows."""
+        # Global config has no deny for WebFetch
+        config_file = tmp_path / "global_config.toml"
+        config_file.write_text(
+            '[hooks]\ndeny = []\n',
+            encoding="utf-8",
+        )
+
+        # Project config denies WebFetch
+        proj_claude = tmp_path / ".claude"
+        proj_claude.mkdir()
+        proj_config = proj_claude / "agentnanny.toml"
+        proj_config.write_text(
+            '[hooks]\ndeny = ["WebFetch"]\n',
+            encoding="utf-8",
+        )
+
+        event = {"tool_name": "WebFetch", "tool_input": {"url": "http://example.com"}}
+        stdin = StringIO(json.dumps(event))
+        stdout = StringIO()
+
+        with patch.object(sys, "stdin", stdin), \
+             patch.object(sys, "stdout", stdout), \
+             patch.object(agentnanny, "CONFIG_PATH", config_file), \
+             patch("pathlib.Path.cwd", return_value=tmp_path), \
+             patch.object(agentnanny, "audit_log"):
+            agentnanny.handle_hook()
+
+        result = json.loads(stdout.getvalue())
+        assert result["hookSpecificOutput"]["decision"]["behavior"] == "deny"
