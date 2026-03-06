@@ -2313,3 +2313,167 @@ class TestProjectConfig:
 
         result = json.loads(stdout.getvalue())
         assert result["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PostToolUse hook
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPostToolUseHook:
+    def _make_cfg(self, context_overrides: dict | None = None) -> dict:
+        cfg = {
+            "hooks": {},
+            "logging": {"audit_log": os.devnull, "level": "all"},
+            "context": {},
+        }
+        if context_overrides:
+            cfg["context"] = context_overrides
+        return cfg
+
+    def test_post_hook_logs_execution(self, tmp_path):
+        """audit_log is called with action='executed'."""
+        event = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
+        stdin = StringIO(json.dumps(event))
+        stdout = StringIO()
+        cfg = self._make_cfg()
+        status_path = tmp_path / "status.json"  # does not exist
+
+        with patch.object(sys, "stdin", stdin), \
+             patch.object(sys, "stdout", stdout), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.object(agentnanny, "audit_log") as mock_log, \
+             patch.object(agentnanny, "Path") as mock_path_cls:
+            # Make Path.home() / ".claude" / "status.json" point to nonexistent file
+            mock_path_cls.home.return_value = tmp_path
+            agentnanny.handle_post_hook()
+
+        mock_log.assert_called_once_with("hook", "executed", "Bash", "ls -la", cfg)
+
+    def test_post_hook_no_status_file(self, tmp_path):
+        """No status.json produces no stdout output."""
+        event = {"tool_name": "Read", "tool_input": {"file_path": "/tmp/x.py"}}
+        stdin = StringIO(json.dumps(event))
+        stdout = StringIO()
+        cfg = self._make_cfg()
+
+        with patch.object(sys, "stdin", stdin), \
+             patch.object(sys, "stdout", stdout), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.object(agentnanny, "audit_log"):
+            # Patch Path.home to a dir without status.json
+            with patch.object(Path, "home", return_value=tmp_path):
+                agentnanny.handle_post_hook()
+
+        assert stdout.getvalue() == ""
+
+    def test_post_hook_context_warning(self, tmp_path):
+        """contextPercent=65 triggers WARNING message."""
+        event = {"tool_name": "Bash", "tool_input": {"command": "echo hi"}}
+        stdin = StringIO(json.dumps(event))
+        stdout = StringIO()
+        cfg = self._make_cfg()
+
+        status_dir = tmp_path / ".claude"
+        status_dir.mkdir()
+        (status_dir / "status.json").write_text(
+            json.dumps({"contextPercent": 65}), encoding="utf-8"
+        )
+
+        with patch.object(sys, "stdin", stdin), \
+             patch.object(sys, "stdout", stdout), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.object(agentnanny, "audit_log"), \
+             patch.object(Path, "home", return_value=tmp_path):
+            agentnanny.handle_post_hook()
+
+        result = json.loads(stdout.getvalue())
+        msg = result["hookSpecificOutput"]["message"]
+        assert "WARNING" in msg
+        assert "65%" in msg
+
+    def test_post_hook_context_critical(self, tmp_path):
+        """contextPercent=80 triggers CRITICAL message."""
+        event = {"tool_name": "Bash", "tool_input": {"command": "echo hi"}}
+        stdin = StringIO(json.dumps(event))
+        stdout = StringIO()
+        cfg = self._make_cfg()
+
+        status_dir = tmp_path / ".claude"
+        status_dir.mkdir()
+        (status_dir / "status.json").write_text(
+            json.dumps({"contextPercent": 80}), encoding="utf-8"
+        )
+
+        with patch.object(sys, "stdin", stdin), \
+             patch.object(sys, "stdout", stdout), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.object(agentnanny, "audit_log"), \
+             patch.object(Path, "home", return_value=tmp_path):
+            agentnanny.handle_post_hook()
+
+        result = json.loads(stdout.getvalue())
+        msg = result["hookSpecificOutput"]["message"]
+        assert "CRITICAL" in msg
+        assert "80%" in msg
+
+    def test_post_hook_context_below_threshold(self, tmp_path):
+        """contextPercent=30 produces no output."""
+        event = {"tool_name": "Bash", "tool_input": {"command": "echo hi"}}
+        stdin = StringIO(json.dumps(event))
+        stdout = StringIO()
+        cfg = self._make_cfg()
+
+        status_dir = tmp_path / ".claude"
+        status_dir.mkdir()
+        (status_dir / "status.json").write_text(
+            json.dumps({"contextPercent": 30}), encoding="utf-8"
+        )
+
+        with patch.object(sys, "stdin", stdin), \
+             patch.object(sys, "stdout", stdout), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.object(agentnanny, "audit_log"), \
+             patch.object(Path, "home", return_value=tmp_path):
+            agentnanny.handle_post_hook()
+
+        assert stdout.getvalue() == ""
+
+    def test_post_hook_custom_thresholds(self, tmp_path):
+        """Custom warn_percent=50 triggers WARNING at 55%."""
+        event = {"tool_name": "Bash", "tool_input": {"command": "echo hi"}}
+        stdin = StringIO(json.dumps(event))
+        stdout = StringIO()
+        cfg = self._make_cfg({"warn_percent": 50, "critical_percent": 70})
+
+        status_dir = tmp_path / ".claude"
+        status_dir.mkdir()
+        (status_dir / "status.json").write_text(
+            json.dumps({"contextPercent": 55}), encoding="utf-8"
+        )
+
+        with patch.object(sys, "stdin", stdin), \
+             patch.object(sys, "stdout", stdout), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.object(agentnanny, "audit_log"), \
+             patch.object(Path, "home", return_value=tmp_path):
+            agentnanny.handle_post_hook()
+
+        result = json.loads(stdout.getvalue())
+        msg = result["hookSpecificOutput"]["message"]
+        assert "WARNING" in msg
+        assert "55%" in msg
+
+    def test_install_registers_post_hook(self, tmp_path):
+        """install_hooks() adds PostToolUse entry alongside PermissionRequest."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text("{}", encoding="utf-8")
+
+        with patch.object(agentnanny, "SETTINGS_PATH", settings_file):
+            agentnanny.install_hooks()
+
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+        post = settings["hooks"]["PostToolUse"]
+        assert len(post) == 1
+        assert "agentnanny" in post[0]["hooks"][0]["command"]
+        assert "post-hook" in post[0]["hooks"][0]["command"]

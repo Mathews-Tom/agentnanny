@@ -116,7 +116,7 @@ def _merge_project_config(base: dict, project: dict) -> None:
 
 def load_config() -> dict:
     """Load config.toml, with project-local and env var overrides."""
-    cfg: dict = {"hooks": {}, "daemon": {}, "logging": {}}
+    cfg: dict = {"hooks": {}, "daemon": {}, "logging": {}, "context": {}}
     if CONFIG_PATH.exists():
         if tomllib is not None:
             with open(CONFIG_PATH, "rb") as f:
@@ -509,6 +509,59 @@ def handle_hook():
     return
 
 
+def handle_post_hook():
+    """PostToolUse hook handler. Observes tool execution results.
+
+    Logs tool executions and monitors context window pressure.
+    Reads context percentage from ~/.claude/status.json when available.
+    """
+    event = json.load(sys.stdin)
+    tool_name = event.get("tool_name", "")
+    tool_input = event.get("tool_input", {})
+
+    cfg = load_config()
+    detail = _primary_input(tool_name, tool_input)[:200]
+    audit_log("hook", "executed", tool_name, detail, cfg)
+
+    # Context pressure monitoring
+    context_cfg = cfg.get("context", {})
+    warn_threshold = int(context_cfg.get("warn_percent", 60))
+    critical_threshold = int(context_cfg.get("critical_percent", 75))
+
+    status_path = Path.home() / ".claude" / "status.json"
+    if not status_path.exists():
+        return
+
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+
+    context_pct = status.get("contextPercent", status.get("context_percent", 0))
+    if not isinstance(context_pct, (int, float)) or context_pct <= 0:
+        return
+
+    if context_pct >= critical_threshold:
+        message = (
+            f"[agentnanny] CRITICAL: Context window at {context_pct}%. "
+            f"Save progress and key findings now. Consider starting a new session."
+        )
+    elif context_pct >= warn_threshold:
+        message = (
+            f"[agentnanny] WARNING: Context window at {context_pct}%. "
+            f"Start wrapping up current task and consolidating findings."
+        )
+    else:
+        return
+
+    json.dump({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "message": message,
+        }
+    }, sys.stdout)
+
+
 # ---------------------------------------------------------------------------
 # Mode 2: Install / Uninstall hooks
 # ---------------------------------------------------------------------------
@@ -550,6 +603,27 @@ def install_hooks():
     }
 
     perm_hooks.append(hook_entry)
+
+    # Also register PostToolUse for observability
+    post_hooks: list = hooks.setdefault("PostToolUse", [])
+
+    # Check if already installed
+    already_has_post = any(
+        HOOK_MARKER in h.get("command", "")
+        for entry in post_hooks
+        for h in entry.get("hooks", [])
+    )
+
+    if not already_has_post:
+        post_entry = {
+            "matcher": "",
+            "hooks": [{
+                "type": "command",
+                "command": f'"{python_cmd}" "{script_path}" post-hook',
+            }],
+        }
+        post_hooks.append(post_entry)
+
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     print(f"Installed PermissionRequest hook in {SETTINGS_PATH}")
 
@@ -564,7 +638,7 @@ def uninstall_hooks():
     hooks = settings.get("hooks", {})
     modified = False
 
-    for event_name in ("PermissionRequest", "PreToolUse"):
+    for event_name in ("PermissionRequest", "PreToolUse", "PostToolUse"):
         entries: list = hooks.get(event_name, [])
         filtered = []
         for entry in entries:
@@ -1402,6 +1476,7 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("hook", help="Hook handler (called by Claude Code, not user)")
+    sub.add_parser("post-hook", help="PostToolUse hook handler (called by Claude Code)")
     sub.add_parser("install", help="Register hooks in ~/.claude/settings.json")
     sub.add_parser("uninstall", help="Remove hooks from ~/.claude/settings.json")
 
@@ -1458,6 +1533,8 @@ def main():
 
     if args.command == "hook":
         handle_hook()
+    elif args.command == "post-hook":
+        handle_post_hook()
     elif args.command == "install":
         install_hooks()
     elif args.command == "uninstall":

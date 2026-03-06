@@ -23,3 +23,8 @@ level = "actions"
 # Log rotation: rotate when file exceeds max_size_bytes, keep backup_count old files
 max_size_bytes = 10485760
 backup_count = 3
+
+[context]
+# Context window pressure thresholds (percentage)
+warn_percent = 60
+critical_percent = 75
