@@ -185,6 +185,14 @@ def _primary_input(tool_name: str, tool_input: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+_SCOPE_ID_RE = re.compile(r'^[a-f0-9]{8}$')
+
+
+def _valid_scope_id(scope_id: str) -> bool:
+    """Check that a scope ID is a valid 8-char hex string."""
+    return bool(_SCOPE_ID_RE.match(scope_id))
+
+
 def generate_scope_id() -> str:
     """Generate a random 8-char hex scope ID."""
     return os.urandom(4).hex()
@@ -201,14 +209,20 @@ def save_session_policy(policy: dict) -> Path:
     _secure_dir(SESSION_DIR)
     path = SESSION_DIR / f"{policy['scope_id']}.json"
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(policy, indent=2), encoding="utf-8")
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 600
+    data = json.dumps(policy, indent=2).encode("utf-8")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
     tmp.replace(path)
     return path
 
 
 def load_session_policy(scope_id: str) -> dict | None:
     """Load a session policy by scope ID. Returns None if missing or expired."""
+    if not _valid_scope_id(scope_id):
+        return None
     path = SESSION_DIR / f"{scope_id}.json"
     if not path.exists():
         return None
@@ -228,6 +242,8 @@ def load_session_policy(scope_id: str) -> dict | None:
 
 def delete_session_policy(scope_id: str) -> bool:
     """Delete a session policy. Returns True if it existed."""
+    if not _valid_scope_id(scope_id):
+        return False
     path = SESSION_DIR / f"{scope_id}.json"
     if path.exists():
         path.unlink()
@@ -1193,6 +1209,57 @@ def cmd_test_policy(groups: str | None, tools: str | None, deny: str | None, too
         raise SystemExit(1)
 
 
+def cmd_explain(scope_id: str | None):
+    """Show detailed information about a session policy."""
+    scope_id = scope_id or os.environ.get("AGENTNANNY_SCOPE")
+    if not scope_id:
+        print("No scope ID provided and AGENTNANNY_SCOPE not set", file=sys.stderr)
+        raise SystemExit(1)
+    policy = load_session_policy(scope_id)
+    if policy is None:
+        print(f"No active session policy for {scope_id}", file=sys.stderr)
+        raise SystemExit(1)
+    now = datetime.now(timezone.utc)
+    created = datetime.fromisoformat(policy["created"])
+    age = int((now - created).total_seconds())
+    ttl = policy.get("ttl_seconds", 0)
+    groups = policy.get("allow_groups", [])
+    tools = policy.get("allow_tools", [])
+    deny = policy.get("deny", [])
+
+    print(f"Scope:    {scope_id}")
+    print(f"Created:  {policy['created']}")
+    if ttl:
+        remaining = max(0, ttl - age)
+        print(f"TTL:      {ttl}s ({remaining}s remaining)")
+    else:
+        print(f"TTL:      none (no expiry)")
+    print(f"Groups:   {', '.join(groups) if groups else '-'}")
+    if groups:
+        cfg = load_config()
+        groups_cfg = cfg.get("groups", {})
+        for g in groups:
+            pats = groups_cfg.get(g, [])
+            if pats:
+                print(f"  {g}: {', '.join(pats)}")
+    print(f"Tools:    {', '.join(tools) if tools else '-'}")
+    print(f"Deny:     {', '.join(deny) if deny else '-'}")
+    print(f"Status:   {'ACTIVE' if not ttl or age < ttl else 'EXPIRED'}")
+
+
+def cmd_list_groups():
+    """List all configured operation groups and their patterns."""
+    cfg = load_config()
+    groups = cfg.get("groups", {})
+    if not groups:
+        print("No groups configured in config.toml")
+        return
+    max_name = max(len(name) for name in groups)
+    for name, patterns in groups.items():
+        pats = ", ".join(patterns)
+        print(f"{name:<{max_name}}  {pats}")
+
+
 def cmd_prune():
     """Remove all expired session policy files."""
     if not SESSION_DIR.exists():
@@ -1259,6 +1326,10 @@ def main():
     p_run.add_argument("command_args", nargs=argparse.REMAINDER, help="Command to run (after --)")
 
     sub.add_parser("sessions", help="List active session policies")
+    sub.add_parser("list-groups", help="Show configured operation groups")
+
+    p_explain = sub.add_parser("explain", help="Show details of a session policy")
+    p_explain.add_argument("scope_id", nargs="?", default=None, help="Scope ID (default: from AGENTNANNY_SCOPE)")
     sub.add_parser("prune", help="Remove expired session policies")
 
     p_test = sub.add_parser("test-policy", help="Dry-run a tool call against a policy")
@@ -1293,6 +1364,10 @@ def main():
         cmd_run(args.groups, args.tools, args.deny, args.ttl, args.command_args)
     elif args.command == "sessions":
         cmd_sessions()
+    elif args.command == "list-groups":
+        cmd_list_groups()
+    elif args.command == "explain":
+        cmd_explain(args.scope_id)
     elif args.command == "prune":
         cmd_prune()
     elif args.command == "test-policy":
