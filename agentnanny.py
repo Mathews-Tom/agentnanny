@@ -110,6 +110,18 @@ def load_config() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _glob_to_regex(glob_pat: str) -> str:
+    """Convert a glob pattern to regex, supporting ``*``, ``?``, and ``|`` alternation.
+
+    The ``|`` character splits the pattern into alternatives:
+        ``curl*|*sh`` → matches inputs starting with ``curl`` OR ending with ``sh``.
+    Each alternative is independently converted (``*`` → ``.*``, ``?`` → ``.``).
+    """
+    parts = glob_pat.split("|")
+    regex_parts = [re.escape(p).replace(r"\*", ".*").replace(r"\?", ".") for p in parts]
+    return "|".join(regex_parts)
+
+
 def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool:
     """Check if a tool call matches any deny pattern.
 
@@ -117,6 +129,7 @@ def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool
         "Bash"              — exact tool name match
         "Bash(rm*)"         — tool name + command pattern (glob-style)
         "Bash(rm -rf*)"     — tool name + command prefix
+        "Bash(curl*|*sh)"   — alternation (matches curl… OR …sh)
         ".*dangerous.*"     — regex against tool_name
     """
     for pattern in deny_list:
@@ -126,10 +139,8 @@ def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool
             pat_tool, pat_input = m.group(1), m.group(2)
             if pat_tool != tool_name:
                 continue
-            # Match against the primary input field (command for Bash, etc.)
             input_str = _primary_input(tool_name, tool_input)
-            # Convert glob-style to regex
-            regex = re.escape(pat_input).replace(r"\*", ".*").replace(r"\?", ".")
+            regex = _glob_to_regex(pat_input)
             if re.match(regex, input_str):
                 return True
         else:
@@ -264,6 +275,7 @@ def matches_allow(tool_name: str, tool_input: dict, allow_patterns: list[str]) -
     Same pattern syntax as matches_deny:
         "Bash"              — exact tool name
         "Bash(ls*)"         — tool name + input pattern
+        "Bash(git status*|git diff*)" — alternation
         ".*"                — regex wildcard (match all)
     """
     for pattern in allow_patterns:
@@ -273,7 +285,7 @@ def matches_allow(tool_name: str, tool_input: dict, allow_patterns: list[str]) -
             if pat_tool != tool_name:
                 continue
             input_str = _primary_input(tool_name, tool_input)
-            regex = re.escape(pat_input).replace(r"\*", ".*").replace(r"\?", ".")
+            regex = _glob_to_regex(pat_input)
             if re.match(regex, input_str):
                 return True
         else:

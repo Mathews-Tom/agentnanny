@@ -170,6 +170,7 @@ eval $(python agentnanny.py activate -g shell -d "Bash(rm*),Bash(curl*|*sh)")
 | `Bash` | Any Bash tool call |
 | `Bash(rm*)` | Bash commands starting with `rm` |
 | `Bash(rm -rf*)` | Bash commands starting with `rm -rf` |
+| `Bash(curl*\|*sh)` | Bash commands starting with `curl` OR ending with `sh` |
 | `Write(/etc/*)` | Write calls to paths under `/etc/` |
 | `WebFetch(*evil.com*)` | WebFetch calls with `evil.com` in the URL |
 | `.*Fetch.*` | Regex against tool name (matches WebFetch) |
