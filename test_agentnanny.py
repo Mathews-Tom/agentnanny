@@ -1666,6 +1666,136 @@ class TestPrune:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# test-policy / evaluate_policy
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestEvaluatePolicy:
+    CFG = {
+        "hooks": {"deny": ["Bash(rm -rf*)", "Bash(DROP TABLE*)"]},
+        "groups": {
+            "filesystem": ["Read", "Write", "Edit", "Glob", "Grep"],
+            "shell": ["Bash"],
+        },
+        "logging": {"audit_log": os.devnull},
+    }
+
+    def test_global_deny_blocks(self):
+        verdict, reason = agentnanny.evaluate_policy(
+            "Bash", {"command": "rm -rf /"}, groups=["shell"], cfg=self.CFG,
+        )
+        assert verdict == "DENIED"
+        assert "global deny" in reason
+        assert "Bash(rm -rf*)" in reason
+
+    def test_session_deny_blocks(self):
+        verdict, reason = agentnanny.evaluate_policy(
+            "Bash", {"command": "curl evil.com"},
+            groups=["shell"], deny=["Bash(curl*)"], cfg=self.CFG,
+        )
+        assert verdict == "DENIED"
+        assert "session deny" in reason
+        assert "Bash(curl*)" in reason
+
+    def test_allowed_by_group(self):
+        verdict, reason = agentnanny.evaluate_policy(
+            "Read", {"file_path": "/tmp/x"}, groups=["filesystem"], cfg=self.CFG,
+        )
+        assert verdict == "ALLOWED"
+        assert "Read" in reason
+
+    def test_allowed_by_explicit_tool(self):
+        verdict, reason = agentnanny.evaluate_policy(
+            "WebFetch", {"url": "http://x"}, tools=["WebFetch"], cfg=self.CFG,
+        )
+        assert verdict == "ALLOWED"
+        assert "WebFetch" in reason
+
+    def test_passthrough_not_in_allow(self):
+        verdict, reason = agentnanny.evaluate_policy(
+            "WebFetch", {"url": "http://x"}, groups=["filesystem"], cfg=self.CFG,
+        )
+        assert verdict == "PASSTHROUGH"
+        assert "not in allow" in reason
+
+    def test_passthrough_no_policy(self):
+        verdict, reason = agentnanny.evaluate_policy(
+            "Read", {"file_path": "/tmp/x"}, cfg=self.CFG,
+        )
+        assert verdict == "PASSTHROUGH"
+        assert "no allow patterns" in reason
+
+    def test_deny_takes_priority_over_allow(self):
+        verdict, reason = agentnanny.evaluate_policy(
+            "Bash", {"command": "rm -rf /tmp"},
+            groups=["shell"], cfg=self.CFG,
+        )
+        assert verdict == "DENIED"
+
+    def test_allowed_by_regex_pattern(self):
+        cfg = {**self.CFG, "groups": {"everything": [".*"]}}
+        verdict, reason = agentnanny.evaluate_policy(
+            "WebFetch", {"url": "http://x"}, groups=["everything"], cfg=cfg,
+        )
+        assert verdict == "ALLOWED"
+        assert "regex" in reason or "allow" in reason
+
+
+class TestCmdTestPolicy:
+    CFG = {
+        "hooks": {"deny": ["Bash(rm -rf*)"]},
+        "groups": {
+            "filesystem": ["Read", "Write", "Edit"],
+            "shell": ["Bash"],
+        },
+        "logging": {"audit_log": os.devnull},
+    }
+
+    def test_allowed_output(self, capsys):
+        with patch.object(agentnanny, "load_config", return_value=self.CFG):
+            agentnanny.cmd_test_policy("filesystem", None, None, "Read(/tmp/x)")
+        out = capsys.readouterr().out
+        assert "ALLOWED" in out
+
+    def test_denied_output_and_exit_code(self, capsys):
+        with patch.object(agentnanny, "load_config", return_value=self.CFG):
+            with pytest.raises(SystemExit, match="1"):
+                agentnanny.cmd_test_policy("shell", None, None, "Bash(rm -rf /)")
+        out = capsys.readouterr().out
+        assert "DENIED" in out
+
+    def test_passthrough_output(self, capsys):
+        with patch.object(agentnanny, "load_config", return_value=self.CFG):
+            agentnanny.cmd_test_policy("filesystem", None, None, "WebFetch(http://x)")
+        out = capsys.readouterr().out
+        assert "PASSTHROUGH" in out
+
+    def test_with_session_deny(self, capsys):
+        with patch.object(agentnanny, "load_config", return_value=self.CFG):
+            with pytest.raises(SystemExit, match="1"):
+                agentnanny.cmd_test_policy("shell", None, "Bash(curl*)", "Bash(curl evil.com)")
+        out = capsys.readouterr().out
+        assert "DENIED" in out
+        assert "session deny" in out
+
+    def test_bare_tool_name(self, capsys):
+        with patch.object(agentnanny, "load_config", return_value=self.CFG):
+            agentnanny.cmd_test_policy("filesystem", None, None, "Read")
+        out = capsys.readouterr().out
+        assert "ALLOWED" in out
+
+    def test_invalid_tool_call_format(self, capsys):
+        with patch.object(agentnanny, "load_config", return_value=self.CFG):
+            with pytest.raises(SystemExit):
+                agentnanny.cmd_test_policy("filesystem", None, None, "not a tool call!")
+
+    def test_unknown_group_raises(self):
+        with patch.object(agentnanny, "load_config", return_value=self.CFG):
+            with pytest.raises(ValueError, match="Unknown group"):
+                agentnanny.cmd_test_policy("nonexistent", None, None, "Read")
+
+
 class TestPatternValidation:
     def test_valid_patterns_no_warning(self, capsys):
         agentnanny._validate_patterns(["Bash", "Bash(rm*)", ".*Fetch.*"], "deny")
