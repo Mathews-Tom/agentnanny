@@ -447,13 +447,10 @@ def matches_allow(tool_name: str, tool_input: dict, allow_patterns: list[str]) -
 
 def _rotate_log(log_path: str, backup_count: int) -> None:
     """Rotate log files: .log → .log.1, .log.1 → .log.2, etc."""
-    for i in range(backup_count, 0, -1):
-        src = f"{log_path}.{i}" if i > 1 else f"{log_path}.1"
-        dst = f"{log_path}.{i + 1}" if i < backup_count else None
-        # Drop the oldest backup if at limit
-        if i == backup_count and Path(src).exists():
-            Path(src).unlink()
-            continue
+    # Drop the oldest backup if at limit
+    oldest = f"{log_path}.{backup_count}"
+    if Path(oldest).exists():
+        Path(oldest).unlink()
     # Shift existing backups up
     for i in range(backup_count - 1, 0, -1):
         src = f"{log_path}.{i}"
@@ -671,14 +668,20 @@ def install_hooks():
 
     # Register PostToolUse hook for context pressure monitoring
     post_hooks: list = hooks.setdefault("PostToolUse", [])
-    post_hook_entry = {
-        "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": f'"{python_cmd}" "{script_path}" post-hook',
-        }],
-    }
-    post_hooks.append(post_hook_entry)
+    already_installed = any(
+        HOOK_MARKER in h.get("command", "")
+        for entry in post_hooks
+        for h in entry.get("hooks", [])
+    )
+    if not already_installed:
+        post_hook_entry = {
+            "matcher": "",
+            "hooks": [{
+                "type": "command",
+                "command": f'"{python_cmd}" "{script_path}" post-hook',
+            }],
+        }
+        post_hooks.append(post_hook_entry)
 
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     print(f"Installed PermissionRequest hook in {SETTINGS_PATH}")
@@ -1246,6 +1249,9 @@ def cmd_extend(scope_id: str | None, groups: str | None, tools: str | None,
     if not scope_id:
         print("No scope ID provided and AGENTNANNY_SCOPE not set", file=sys.stderr)
         raise SystemExit(1)
+    if not _valid_scope_id(scope_id):
+        print(f"Invalid scope ID: {scope_id}", file=sys.stderr)
+        raise SystemExit(1)
 
     policy = load_session_policy(scope_id)
     if policy is None:
@@ -1419,6 +1425,9 @@ def cmd_explain(scope_id: str | None):
         scope_id = os.environ.get("AGENTNANNY_SCOPE")
     if not scope_id:
         print("No scope ID provided and AGENTNANNY_SCOPE not set", file=sys.stderr)
+        raise SystemExit(1)
+    if not _valid_scope_id(scope_id):
+        print(f"Invalid scope ID: {scope_id}", file=sys.stderr)
         raise SystemExit(1)
 
     policy = load_session_policy(scope_id)

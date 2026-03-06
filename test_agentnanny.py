@@ -1123,6 +1123,7 @@ class TestScopeIdValidation:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not supported on Windows")
 class TestFilePermissions:
     def test_session_file_is_owner_only(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
