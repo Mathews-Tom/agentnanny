@@ -1,21 +1,23 @@
 # agentnanny
 
-Auto-approve Claude Code permission prompts — scoped to exactly where you need it.
+Stop clicking "Allow" on every Claude Code permission prompt.
+
+agentnanny auto-approves the tools you trust (file reads, shell commands, etc.) while still blocking the ones you don't (force-push, rm -rf, DROP TABLE). Each terminal gets its own rules. Permissions expire automatically.
+
+**Before:** Claude asks permission for every file read, every grep, every test run. You click "Allow" hundreds of times a day, or use `--dangerously-skip-permissions` and lose all safety.
+
+**After:** Pick a profile, start working. Safe operations auto-approve. Dangerous commands still prompt.
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/syd-ppt/agentnanny.git
 cd agentnanny
-python agentnanny.py install                                   # one-time hook setup
+python agentnanny.py install                                   # one-time setup
 python agentnanny.py run safe-dev -- claude -p "refactor auth"  # done
 ```
 
-That's it. `safe-dev` auto-approves filesystem + safe shell operations (ls, cat, grep, find) for 8 hours, then cleans up.
-
-## The Problem
-
-Claude Code prompts for permission on tool use. `--dangerously-skip-permissions` is all-or-nothing and applies machine-wide. You need granular control: auto-approve filesystem operations for an overnight refactor in one terminal, while keeping normal interactive prompts in another.
+`safe-dev` auto-approves reading/writing files and safe shell commands (ls, cat, grep, find) for 8 hours, then cleans up. Claude Code behaves normally for everything else.
 
 ## Profiles
 
@@ -61,7 +63,16 @@ claude   # work interactively
 eval $(python agentnanny.py deactivate)
 ```
 
-**Shell aliases** (add to `~/.bashrc` or `~/.zshrc` for quick access):
+**Modify a running session** (add groups, tools, or deny patterns without restarting):
+
+```bash
+python agentnanny.py extend -g network          # add network group to current session
+python agentnanny.py extend -t WebFetch -d "Bash(curl*)"  # add tool + deny pattern
+```
+
+### Shell aliases
+
+Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 # ── agentnanny ──────────────────────────────────────────────────────────
@@ -87,9 +98,11 @@ nanny-status                         # check hook/session status
 ## Install
 
 ```bash
-python agentnanny.py install                    # register hook in ~/.claude/settings.json
+python agentnanny.py install                    # register hooks in ~/.claude/settings.json
 python agentnanny.py trust /path/to/project     # pre-trust a directory (optional)
 ```
+
+`install` registers two hooks: a `PermissionRequest` hook for policy enforcement, and a `PostToolUse` hook for context window pressure monitoring.
 
 Verify: `python agentnanny.py status`
 
@@ -123,7 +136,9 @@ Claude Code fires PermissionRequest
      PASSTHROUGH (normal Claude prompt)
 ```
 
-With no active scope (no `run` or `activate`), the hook does nothing — Claude Code behaves normally.
+A separate `PostToolUse` hook monitors context window pressure and warns when usage exceeds configurable thresholds (default: 60% warning, 75% critical).
+
+With no active scope (no `run` or `activate`), the permission hook does nothing — Claude Code behaves normally.
 
 ## Configuration
 
@@ -153,6 +168,10 @@ Groups bundle related tools under a name:
 | `review-shell` | Bash(git log\*), Bash(git diff\*), Bash(git show\*), Bash(git blame\*) |
 | `network` | WebFetch, WebSearch |
 | `all` | .\* (everything) |
+
+```bash
+python agentnanny.py list-groups   # show all configured groups (builtin + custom)
+```
 
 Add custom groups in any config layer:
 
@@ -196,10 +215,13 @@ python agentnanny.py run safe-dev -d "Bash(rm*),Bash(curl*)" -- claude
 | `Bash` | Any Bash tool call |
 | `Bash(rm*)` | Bash commands starting with `rm` |
 | `Bash(rm -rf*)` | Bash commands starting with `rm -rf` |
+| `Bash(curl*\|wget*)` | Bash commands starting with `curl` or `wget` |
 | `Write(/etc/*)` | Write calls to paths under `/etc/` |
 | `WebFetch(*evil.com*)` | WebFetch calls containing `evil.com` |
 | `.*Fetch.*` | Regex against tool name |
 | `.*` | Everything |
+
+Inside `Tool(pattern)`, `*` matches anything and `?` matches a single character. Use `|` for alternation.
 
 ### Project config (.agentnanny.toml)
 
@@ -227,15 +249,15 @@ Commit to share with your team. Everyone with agentnanny installed picks up the 
 deny = []
 # allow = ["Bash", "Read"]   # explicit allow list (legacy, used when no scope is active)
 
+[context]
+warn_percent = 60              # context window warning threshold (PostToolUse hook)
+critical_percent = 75          # context window critical threshold
+
 [daemon]
 session = "claude"
 poll_interval = 0.3
 cooldown_seconds = 2.0
 dry_run = false
-
-[context]
-warn_percent = 60              # context window warning threshold
-critical_percent = 75          # context window critical threshold
 
 [logging]
 audit_log = "/tmp/agentnanny.log"
@@ -254,6 +276,28 @@ backup_count = 3               # keep 3 rotated backups
 | `AGENTNANNY_LOG` | Override audit log path |
 | `AGENTNANNY_DRY_RUN` | Set `1` to log without acting |
 
+## Observability
+
+```bash
+python agentnanny.py status              # hook install, daemon, active sessions
+python agentnanny.py sessions            # list active session policies
+python agentnanny.py explain [scope_id]  # inspect a session policy in detail
+python agentnanny.py list-groups         # show all configured groups
+python agentnanny.py test-policy Bash -i '{"command":"rm -rf /"}' # dry-run policy check
+python agentnanny.py log                 # tail the audit log (last 50 entries)
+python agentnanny.py log -n 100 -f json --tool Bash --action denied  # filtered JSON output
+python agentnanny.py log -f table        # formatted table output
+```
+
+### Session management
+
+```bash
+python agentnanny.py sessions            # list active sessions
+python agentnanny.py explain             # inspect current session (from AGENTNANNY_SCOPE)
+python agentnanny.py extend -g network   # add groups/tools/deny to current session
+python agentnanny.py prune               # remove expired session files
+```
+
 ## tmux Daemon (Fallback)
 
 For WSL/headless environments where the hook mechanism doesn't cover all prompts, the tmux daemon polls pane buffers and auto-responds to permission widgets.
@@ -265,16 +309,25 @@ python agentnanny.py stop                    # stop
 
 Detects: permission prompts (selects "allow for project" or "yes"), trust prompts, "Continue?" prompts, collapsed transcripts.
 
-## Status and Logging
+## All Commands
 
-```bash
-python agentnanny.py status              # hook install, daemon, active sessions
-python agentnanny.py sessions            # list active session policies
-python agentnanny.py explain [scope_id]  # inspect a session policy in detail
-python agentnanny.py list-groups         # show all configured groups
-python agentnanny.py test-policy Bash -i '{"command":"rm -rf /"}' # dry-run policy check
-python agentnanny.py log                 # tail the audit log
-python agentnanny.py log -n 100 -f json --tool Bash --action denied  # filtered log
-python agentnanny.py extend -g network   # add groups/tools/deny to current session
-python agentnanny.py prune               # remove expired session files
-```
+| Command | Description |
+|---|---|
+| `install` | Register hooks in `~/.claude/settings.json` |
+| `uninstall` | Remove hooks from `~/.claude/settings.json` |
+| `trust [dir]` | Pre-trust a directory |
+| `run <profile> -- <cmd>` | Run command with session-scoped permissions |
+| `activate [profile]` | Create a session policy (prints `export` command) |
+| `deactivate [scope_id]` | Remove a session policy |
+| `extend [scope_id]` | Add groups, tools, or deny patterns to a session |
+| `profiles` | List available profiles |
+| `list-groups` | List all configured groups |
+| `sessions` | List active session policies |
+| `explain [scope_id]` | Inspect a session policy in detail |
+| `test-policy <tool>` | Dry-run policy evaluation |
+| `status` | Show hook + daemon status |
+| `log` | Tail the audit log (supports `--format`, `--tool`, `--action`, `-n`) |
+| `prune` | Remove expired session files |
+| `init` | Create `.agentnanny.toml` in current directory |
+| `watch [session]` | Start tmux daemon |
+| `stop` | Stop tmux daemon |
