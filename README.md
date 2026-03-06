@@ -124,6 +124,13 @@ python agentnanny.py sessions
 # abc12345  age=3600s  25200s remaining  groups=[filesystem, shell]  tools=[-]
 ```
 
+### prune — remove expired sessions
+
+```bash
+python agentnanny.py prune
+# Pruned 3 expired session(s)
+```
+
 ## Operation Groups
 
 Groups bundle related tools under a name. Defined in `config.toml`:

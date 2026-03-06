@@ -1609,3 +1609,53 @@ class TestLogRotation:
         cfg = {"logging": {"max_size_bytes": 1, "backup_count": 2}}
         agentnanny._rotate_log(log_file, cfg)
         assert not (tmp_path / "test.log.2").read_text() == "old2"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Prune command
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPrune:
+    def test_prune_expired(self, tmp_path, capsys):
+        from datetime import timedelta
+
+        expired_policy = {
+            "scope_id": "expired1",
+            "created": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(timespec="seconds"),
+            "ttl_seconds": 3600,
+            "allow_groups": [],
+            "allow_tools": [],
+            "deny": [],
+        }
+        active_policy = {
+            "scope_id": "active01",
+            "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "ttl_seconds": 3600,
+            "allow_groups": [],
+            "allow_tools": [],
+            "deny": [],
+        }
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            agentnanny.save_session_policy(expired_policy)
+            agentnanny.save_session_policy(active_policy)
+            agentnanny.cmd_prune()
+
+        out = capsys.readouterr().out
+        assert "Pruned 1 expired" in out
+        assert not (tmp_path / "expired1.json").exists()
+        assert (tmp_path / "active01.json").exists()
+
+    def test_prune_no_directory(self, tmp_path, capsys):
+        nonexistent = tmp_path / "nonexistent"
+        with patch.object(agentnanny, "SESSION_DIR", nonexistent):
+            agentnanny.cmd_prune()
+        assert "No session directory" in capsys.readouterr().out
+
+    def test_prune_malformed_json(self, tmp_path, capsys):
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            (tmp_path / "bad.json").write_text("{invalid json")
+            agentnanny.cmd_prune()
+        out = capsys.readouterr().out
+        assert "Pruned 1 expired" in out
+        assert not (tmp_path / "bad.json").exists()

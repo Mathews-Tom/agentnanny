@@ -1046,6 +1046,29 @@ def cmd_sessions():
         print(f"{scope_id}  age={age}s  {ttl_str}  groups=[{groups}]  tools=[{tools}]")
 
 
+def cmd_prune():
+    """Remove all expired session policy files."""
+    if not SESSION_DIR.exists():
+        print("No session directory")
+        return
+    removed = 0
+    now = datetime.now(timezone.utc)
+    for path in SESSION_DIR.glob("*.json"):
+        try:
+            policy = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            path.unlink(missing_ok=True)
+            removed += 1
+            continue
+        ttl = policy.get("ttl_seconds", 0)
+        if ttl > 0:
+            created = datetime.fromisoformat(policy["created"])
+            if (now - created).total_seconds() > ttl:
+                path.unlink(missing_ok=True)
+                removed += 1
+    print(f"Pruned {removed} expired session(s)")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1089,6 +1112,7 @@ def main():
     p_run.add_argument("command_args", nargs=argparse.REMAINDER, help="Command to run (after --)")
 
     sub.add_parser("sessions", help="List active session policies")
+    sub.add_parser("prune", help="Remove expired session policies")
 
     args = parser.parse_args()
 
@@ -1116,6 +1140,8 @@ def main():
         cmd_run(args.groups, args.tools, args.deny, args.ttl, args.command_args)
     elif args.command == "sessions":
         cmd_sessions()
+    elif args.command == "prune":
+        cmd_prune()
     else:
         parser.print_help()
         raise SystemExit(1)
