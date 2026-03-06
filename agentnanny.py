@@ -209,8 +209,12 @@ def save_session_policy(policy: dict) -> Path:
     _secure_dir(SESSION_DIR)
     path = SESSION_DIR / f"{policy['scope_id']}.json"
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(policy, indent=2), encoding="utf-8")
-    os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 600
+    data = json.dumps(policy, indent=2).encode("utf-8")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
     tmp.replace(path)
     return path
 
