@@ -1483,6 +1483,119 @@ class TestActivateDeactivate:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Extend
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestExtend:
+    def _create_policy(self, tmp_path, scope_id, groups=None, tools=None, deny=None):
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            agentnanny.save_session_policy({
+                "scope_id": scope_id,
+                "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "ttl_seconds": 0,
+                "allow_groups": groups or [],
+                "allow_tools": tools or [],
+                "deny": deny or [],
+            })
+
+    def test_extend_adds_group(self, tmp_path):
+        cfg = {
+            "hooks": {},
+            "groups": {
+                "filesystem": ["Read", "Write", "Edit", "Glob", "Grep"],
+                "shell": ["Bash"],
+            },
+            "logging": {"audit_log": os.devnull},
+        }
+        self._create_policy(tmp_path, "e00d1234", groups=["filesystem"])
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.cmd_extend("e00d1234", groups="shell", tools=None, deny=None)
+        policy = json.loads((tmp_path / "e00d1234.json").read_text())
+        assert "filesystem" in policy["allow_groups"]
+        assert "shell" in policy["allow_groups"]
+
+    def test_extend_adds_tool(self, tmp_path):
+        cfg = {
+            "hooks": {},
+            "groups": {},
+            "logging": {"audit_log": os.devnull},
+        }
+        self._create_policy(tmp_path, "e00d5678", tools=[])
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.cmd_extend("e00d5678", groups=None, tools="WebFetch", deny=None)
+        policy = json.loads((tmp_path / "e00d5678.json").read_text())
+        assert "WebFetch" in policy["allow_tools"]
+
+    def test_extend_adds_deny(self, tmp_path):
+        cfg = {
+            "hooks": {},
+            "groups": {},
+            "logging": {"audit_log": os.devnull},
+        }
+        self._create_policy(tmp_path, "e00daa11", deny=[])
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.cmd_extend("e00daa11", groups=None, tools=None, deny="Bash(curl*)")
+        policy = json.loads((tmp_path / "e00daa11.json").read_text())
+        assert "Bash(curl*)" in policy["deny"]
+
+    def test_extend_deduplicates(self, tmp_path):
+        cfg = {
+            "hooks": {},
+            "groups": {
+                "filesystem": ["Read", "Write", "Edit", "Glob", "Grep"],
+            },
+            "logging": {"audit_log": os.devnull},
+        }
+        self._create_policy(tmp_path, "e00dbb22", groups=["filesystem"])
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg):
+            agentnanny.cmd_extend("e00dbb22", groups="filesystem", tools=None, deny=None)
+        policy = json.loads((tmp_path / "e00dbb22.json").read_text())
+        assert policy["allow_groups"].count("filesystem") == 1
+
+    def test_extend_from_env(self, tmp_path):
+        cfg = {
+            "hooks": {},
+            "groups": {},
+            "logging": {"audit_log": os.devnull},
+        }
+        self._create_policy(tmp_path, "e00dcc33", tools=[])
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.dict(os.environ, {"AGENTNANNY_SCOPE": "e00dcc33"}):
+            agentnanny.cmd_extend(None, groups=None, tools="Bash", deny=None)
+        policy = json.loads((tmp_path / "e00dcc33.json").read_text())
+        assert "Bash" in policy["allow_tools"]
+
+    def test_extend_missing_scope(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENTNANNY_SCOPE", None)
+            with pytest.raises(SystemExit):
+                agentnanny.cmd_extend(None, groups=None, tools=None, deny=None)
+
+    def test_extend_missing_policy(self, tmp_path):
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            with pytest.raises(SystemExit):
+                agentnanny.cmd_extend("e00ddd44", groups="shell", tools=None, deny=None)
+
+    def test_extend_unknown_group(self, tmp_path):
+        cfg = {
+            "hooks": {},
+            "groups": {},
+            "logging": {"audit_log": os.devnull},
+        }
+        self._create_policy(tmp_path, "e00dee55")
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg):
+            with pytest.raises(ValueError, match="Unknown group"):
+                agentnanny.cmd_extend("e00dee55", groups="nonexistent", tools=None, deny=None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Run wrapper
 # ═══════════════════════════════════════════════════════════════════════════
 
