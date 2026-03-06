@@ -1666,6 +1666,52 @@ class TestPrune:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Scope ID validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestScopeIdValidation:
+    def test_valid_scope_id(self):
+        assert agentnanny._valid_scope_id("a1b2c3d4") is True
+
+    def test_valid_scope_id_all_hex_chars(self):
+        assert agentnanny._valid_scope_id("0123abcd") is True
+
+    def test_invalid_scope_id_path_traversal(self):
+        assert agentnanny._valid_scope_id("../../etc") is False
+
+    def test_invalid_scope_id_too_long(self):
+        assert agentnanny._valid_scope_id("a1b2c3d4e5") is False
+
+    def test_invalid_scope_id_too_short(self):
+        assert agentnanny._valid_scope_id("a1b2") is False
+
+    def test_invalid_scope_id_uppercase(self):
+        assert agentnanny._valid_scope_id("A1B2C3D4") is False
+
+    def test_invalid_scope_id_non_hex(self):
+        assert agentnanny._valid_scope_id("ghijklmn") is False
+
+    def test_invalid_scope_id_empty(self):
+        assert agentnanny._valid_scope_id("") is False
+
+    def test_load_rejects_invalid_scope_id(self, tmp_path):
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            result = agentnanny.load_session_policy("../../etc/passwd")
+            assert result is None
+
+    def test_delete_rejects_invalid_scope_id(self, tmp_path):
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path):
+            result = agentnanny.delete_session_policy("../../etc/passwd")
+            assert result is False
+
+    def test_generate_scope_id_is_valid(self):
+        for _ in range(100):
+            sid = agentnanny.generate_scope_id()
+            assert agentnanny._valid_scope_id(sid), f"Generated invalid scope_id: {sid}"
+
+
 class TestPatternValidation:
     def test_valid_patterns_no_warning(self, capsys):
         agentnanny._validate_patterns(["Bash", "Bash(rm*)", ".*Fetch.*"], "deny")

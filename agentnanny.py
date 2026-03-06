@@ -185,6 +185,14 @@ def _primary_input(tool_name: str, tool_input: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+_SCOPE_ID_RE = re.compile(r'^[a-f0-9]{8}$')
+
+
+def _valid_scope_id(scope_id: str) -> bool:
+    """Check that a scope ID is a valid 8-char hex string."""
+    return bool(_SCOPE_ID_RE.match(scope_id))
+
+
 def generate_scope_id() -> str:
     """Generate a random 8-char hex scope ID."""
     return os.urandom(4).hex()
@@ -209,6 +217,8 @@ def save_session_policy(policy: dict) -> Path:
 
 def load_session_policy(scope_id: str) -> dict | None:
     """Load a session policy by scope ID. Returns None if missing or expired."""
+    if not _valid_scope_id(scope_id):
+        return None
     path = SESSION_DIR / f"{scope_id}.json"
     if not path.exists():
         return None
@@ -228,6 +238,8 @@ def load_session_policy(scope_id: str) -> dict | None:
 
 def delete_session_policy(scope_id: str) -> bool:
     """Delete a session policy. Returns True if it existed."""
+    if not _valid_scope_id(scope_id):
+        return False
     path = SESSION_DIR / f"{scope_id}.json"
     if path.exists():
         path.unlink()
