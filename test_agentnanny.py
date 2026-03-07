@@ -2862,58 +2862,57 @@ class TestRemoveCodexConfigKeys:
         assert result is False
 
 
-class TestDenyToCodexRules:
-    def test_bash_pattern(self):
-        rules = agentnanny._deny_to_codex_rules(["Bash(rm -rf /*)"])
+class TestPatternsToCodexRules:
+    def test_deny_bash_pattern(self):
+        rules = agentnanny._patterns_to_codex_rules(["Bash(rm -rf /*)"], "forbidden")
         assert 'pattern=["rm -rf /"]' in rules
         assert 'decision="forbidden"' in rules
+        assert 'justification="blocked by agentnanny"' in rules
 
-    def test_alternation_pattern(self):
-        rules = agentnanny._deny_to_codex_rules(["Bash(curl*|wget*)"])
+    def test_deny_alternation_pattern(self):
+        rules = agentnanny._patterns_to_codex_rules(["Bash(curl*|wget*)"], "forbidden")
         assert 'pattern=["curl"]' in rules
         assert 'pattern=["wget"]' in rules
 
     def test_non_bash_skipped(self):
-        rules = agentnanny._deny_to_codex_rules(["WebFetch", "Write"])
-        lines = [l for l in rules.splitlines() if l.strip() and not l.startswith("#")]
-        assert len(lines) == 0
+        rules = agentnanny._patterns_to_codex_rules(["WebFetch", "Write"], "forbidden")
+        assert rules.strip() == ""
 
-    def test_git_push_force(self):
-        rules = agentnanny._deny_to_codex_rules(["Bash(git push --force*)"])
+    def test_deny_git_push_force(self):
+        rules = agentnanny._patterns_to_codex_rules(["Bash(git push --force*)"], "forbidden")
         assert 'pattern=["git push --force"]' in rules
         assert 'decision="forbidden"' in rules
 
-    def test_mixed_patterns(self):
-        rules = agentnanny._deny_to_codex_rules([
+    def test_deny_mixed_patterns(self):
+        rules = agentnanny._patterns_to_codex_rules([
             "Bash(rm -rf /*)",
             "WebFetch",
             "Bash(DROP TABLE*)",
-        ])
+        ], "forbidden")
         assert 'pattern=["rm -rf /"]' in rules
         assert 'pattern=["DROP TABLE"]' in rules
-        assert "WebFetch" not in rules.split("\n")[-1]
+        assert "WebFetch" not in rules
 
-
-class TestAllowToCodexRules:
-    def test_bash_pattern(self):
-        rules = agentnanny._allow_to_codex_rules(["Bash(ls*)"])
+    def test_allow_bash_pattern(self):
+        rules = agentnanny._patterns_to_codex_rules(["Bash(ls*)"], "allow")
         assert 'pattern=["ls"]' in rules
         assert 'decision="allow"' in rules
+        assert 'justification="allowed by agentnanny"' in rules
 
-    def test_git_commands(self):
-        rules = agentnanny._allow_to_codex_rules([
+    def test_allow_git_commands(self):
+        rules = agentnanny._patterns_to_codex_rules([
             "Bash(git log*)", "Bash(git diff*)", "Bash(git show*)",
-        ])
+        ], "allow")
         assert 'pattern=["git log"]' in rules
         assert 'pattern=["git diff"]' in rules
         assert 'pattern=["git show"]' in rules
 
-    def test_non_bash_skipped(self):
-        rules = agentnanny._allow_to_codex_rules(["Read", "Glob", "Grep"])
+    def test_allow_non_bash_skipped(self):
+        rules = agentnanny._patterns_to_codex_rules(["Read", "Glob", "Grep"], "allow")
         assert rules.strip() == ""
 
-    def test_alternation(self):
-        rules = agentnanny._allow_to_codex_rules(["Bash(cat*|head*)"])
+    def test_allow_alternation(self):
+        rules = agentnanny._patterns_to_codex_rules(["Bash(cat*|head*)"], "allow")
         assert 'pattern=["cat"]' in rules
         assert 'pattern=["head"]' in rules
 
