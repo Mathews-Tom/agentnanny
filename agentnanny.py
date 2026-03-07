@@ -1179,12 +1179,10 @@ def _parse_ttl(ttl_str: str) -> int:
     return int(ttl_str)
 
 
-def cmd_activate(profile: str | None, groups: str | None, tools: str | None,
-                 deny: str | None, ttl: str | None):
-    """Create a session policy and print the env export command."""
-    cfg = load_config()
-
-    # Start from profile defaults if specified
+def _build_policy(profile: str | None, groups: str | None, tools: str | None,
+                  deny: str | None, ttl: str | None,
+                  cfg: dict) -> tuple[dict, str]:
+    """Build a session policy dict from CLI args. Returns (policy, scope_id)."""
     if profile:
         p = resolve_profile(profile, cfg)
         base_groups = p["groups"]
@@ -1195,17 +1193,14 @@ def cmd_activate(profile: str | None, groups: str | None, tools: str | None,
         base_deny = []
         base_ttl = "0"
 
-    # CLI flags merge on top of profile
     group_names = base_groups + ([g.strip() for g in groups.split(",")] if groups else [])
     tool_names = [t.strip() for t in tools.split(",")] if tools else []
     deny_patterns = base_deny + ([d.strip() for d in deny.split(",")] if deny else [])
     ttl_seconds = _parse_ttl(ttl if ttl is not None else base_ttl)
 
-    # Validate group names
     if group_names:
         resolve_groups(group_names, cfg)
 
-    # Validate deny pattern syntax
     for pat in deny_patterns:
         m_pat = re.match(r'^(\w+)\((.+)\)$', pat)
         if m_pat:
@@ -1214,7 +1209,6 @@ def cmd_activate(profile: str | None, groups: str | None, tools: str | None,
             except re.error as exc:
                 raise ValueError(f"Invalid deny pattern {pat!r}: {exc}") from exc
         else:
-            # Plain pattern is used as regex in fullmatch — validate it
             try:
                 re.compile(pat)
             except re.error as exc:
@@ -1229,6 +1223,20 @@ def cmd_activate(profile: str | None, groups: str | None, tools: str | None,
         "allow_tools": tool_names,
         "deny": deny_patterns,
     }
+    return policy, scope_id
+
+
+def cmd_activate(profile: str | None, groups: str | None, tools: str | None,
+                 deny: str | None, ttl: str | None):
+    """Create a session policy and print the env export command."""
+    cfg = load_config()
+    policy, scope_id = _build_policy(profile, groups, tools, deny, ttl, cfg)
+
+    group_names = policy["allow_groups"]
+    tool_names = policy["allow_tools"]
+    deny_patterns = policy["deny"]
+    ttl_seconds = policy["ttl_seconds"]
+
     path = save_session_policy(policy)
     print(f"export AGENTNANNY_SCOPE={scope_id}")
     print(f"# Policy: {path}", file=sys.stderr)
@@ -1325,7 +1333,6 @@ def cmd_run(profile: str | None, groups: str | None, tools: str | None,
     if not command_args:
         print("No command specified", file=sys.stderr)
         raise SystemExit(1)
-    # Strip leading -- if present
     if command_args and command_args[0] == "--":
         command_args = command_args[1:]
     if not command_args:
@@ -1333,36 +1340,7 @@ def cmd_run(profile: str | None, groups: str | None, tools: str | None,
         raise SystemExit(1)
 
     cfg = load_config()
-
-    # Start from profile defaults if specified
-    if profile:
-        p = resolve_profile(profile, cfg)
-        base_groups = p["groups"]
-        base_deny = p["deny"]
-        base_ttl = p["ttl"]
-    else:
-        base_groups = []
-        base_deny = []
-        base_ttl = "0"
-
-    # CLI flags merge on top of profile
-    group_names = base_groups + ([g.strip() for g in groups.split(",")] if groups else [])
-    tool_names = [t.strip() for t in tools.split(",")] if tools else []
-    deny_patterns = base_deny + ([d.strip() for d in deny.split(",")] if deny else [])
-    ttl_seconds = _parse_ttl(ttl if ttl is not None else base_ttl)
-
-    if group_names:
-        resolve_groups(group_names, cfg)
-
-    scope_id = generate_scope_id()
-    policy = {
-        "scope_id": scope_id,
-        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "ttl_seconds": ttl_seconds,
-        "allow_groups": group_names,
-        "allow_tools": tool_names,
-        "deny": deny_patterns,
-    }
+    policy, scope_id = _build_policy(profile, groups, tools, deny, ttl, cfg)
     save_session_policy(policy)
 
     env = os.environ.copy()
