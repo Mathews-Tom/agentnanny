@@ -643,6 +643,13 @@ class TestDetectPrompt:
         )
         assert agentnanny.detect_prompt(screen) == ("trust", 0)
 
+    def test_codex_startup_prompt_detected(self):
+        screen = self._make_screen(
+            "Codex starting",
+            "Do you trust this directory?",
+        )
+        assert agentnanny.detect_codex_startup_prompt(screen)
+
     def test_continue_prompt(self):
         screen = self._make_screen(
             "Long output...",

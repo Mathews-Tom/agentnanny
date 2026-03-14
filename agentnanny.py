@@ -1100,6 +1100,11 @@ TRUST_RE = re.compile(
     re.IGNORECASE,
 )
 
+CODEX_STARTUP_TRUST_RE = re.compile(
+    r"(Trust this directory|trust this directory|do you trust this directory|trust this repository|do you trust this repository)",
+    re.IGNORECASE,
+)
+
 # "Continue?" prompt
 CONTINUE_RE = re.compile(
     r"(Continue\?|Do you want to continue|Press Enter to continue)",
@@ -1184,6 +1189,11 @@ def detect_prompt(text: str) -> tuple[str, int] | None:
         return ("continue", 0)
 
     return None
+
+
+def detect_codex_startup_prompt(text: str) -> bool:
+    """Detect Codex startup trust/setup prompts."""
+    return bool(CODEX_STARTUP_TRUST_RE.search(text))
 
 
 def detect_collapsed(text: str) -> bool:
