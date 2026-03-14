@@ -320,7 +320,15 @@ def generate_scope_id() -> str:
 
 def save_session_policy(policy: dict) -> Path:
     """Write a session policy file with hardened permissions. Returns the path."""
-    os.makedirs(SESSION_DIR, mode=0o700, exist_ok=True)
+    if sys.platform == "win32":
+        os.makedirs(SESSION_DIR, exist_ok=True)
+    else:
+        try:
+            os.makedirs(SESSION_DIR, mode=0o700, exist_ok=True)
+        except PermissionError:
+            # Some non-windows-like runtimes reject mode bits on intermediate dirs.
+            # Fall back to default directory permissions and continue.
+            os.makedirs(SESSION_DIR, exist_ok=True)
     path = SESSION_DIR / f"{policy['scope_id']}.json"
     tmp = path.with_suffix(".tmp")
     fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
