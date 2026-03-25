@@ -668,7 +668,9 @@ def uninstall_codex_hooks():
 
 def handle_codex_hook():
     """Codex notify hook handler. Receives tool execution info for audit logging."""
-    event = json.load(sys.stdin)
+    event = _read_hook_event()
+    if event is None:
+        return
     tool_name = event.get("tool_name", "")
     tool_input = event.get("tool_input", {})
 
@@ -757,6 +759,17 @@ def _hook_allow(tool_name: str, detail: str, cfg: dict):
     }, sys.stdout)
 
 
+def _read_hook_event() -> dict | None:
+    """Read and parse JSON hook event from stdin. Returns None on empty/malformed input."""
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
 def handle_hook():
     """PermissionRequest hook handler. Reads JSON from stdin, writes decision to stdout.
 
@@ -765,7 +778,9 @@ def handle_hook():
       - Session-scoped (AGENTNANNY_SCOPE set): loads session policy, applies its rules.
         Passthrough (no output, exit 0) when scope is missing/expired or tool not in allow list.
     """
-    event = json.load(sys.stdin)
+    event = _read_hook_event()
+    if event is None:
+        return
     tool_name = event.get("tool_name", "")
     tool_input = event.get("tool_input", {})
 
@@ -825,7 +840,9 @@ def handle_hook():
 
 def handle_post_hook():
     """PostToolUse hook handler. Monitors context pressure."""
-    event = json.load(sys.stdin)
+    event = _read_hook_event()
+    if event is None:
+        return
     tool_name = event.get("tool_name", "")
     tool_input = event.get("tool_input", {})
 
