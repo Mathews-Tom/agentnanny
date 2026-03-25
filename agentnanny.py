@@ -34,6 +34,7 @@ SESSION_DIR = Path(tempfile.gettempdir()) / "agentnanny" / "sessions"
 # Codex CLI paths
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
+CODEX_TRUST_PATH = CODEX_HOME / "trust.json"
 
 # Supported targets
 TARGETS = ("claude", "codex")
@@ -319,7 +320,15 @@ def generate_scope_id() -> str:
 
 def save_session_policy(policy: dict) -> Path:
     """Write a session policy file with hardened permissions. Returns the path."""
-    os.makedirs(SESSION_DIR, mode=0o700, exist_ok=True)
+    if sys.platform == "win32":
+        os.makedirs(SESSION_DIR, exist_ok=True)
+    else:
+        try:
+            os.makedirs(SESSION_DIR, mode=0o700, exist_ok=True)
+        except PermissionError:
+            # Some non-windows-like runtimes reject mode bits on intermediate dirs.
+            # Fall back to default directory permissions and continue.
+            os.makedirs(SESSION_DIR, exist_ok=True)
     path = SESSION_DIR / f"{policy['scope_id']}.json"
     tmp = path.with_suffix(".tmp")
     fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
@@ -1001,6 +1010,77 @@ def trust_directory(directory: str):
     print(f"Trusted: {abs_dir}")
 
 
+def _load_codex_trusts() -> dict[str, dict]:
+    """Load Codex trust metadata from CODEX_TRUST_PATH."""
+    if not CODEX_TRUST_PATH.exists():
+        return {"trusted_directories": []}
+    try:
+        data = json.loads(CODEX_TRUST_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("trusted_directories"), list):
+            return data
+    except (json.JSONDecodeError, OSError):
+        return {"trusted_directories": []}
+    return {"trusted_directories": []}
+
+
+def _write_codex_trusts(data: dict) -> None:
+    """Persist Codex trust metadata with owner-only permissions."""
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    tmp = CODEX_TRUST_PATH.with_suffix(".tmp")
+    fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+            f.write("\n")
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(str(tmp), CODEX_TRUST_PATH)
+
+
+def _add_codex_trusted_directory(directory: str) -> str:
+    """Add a directory to Codex trust metadata and return the canonical path."""
+    abs_dir = str(Path(directory).resolve())
+    data = _load_codex_trusts()
+    trusted = data.get("trusted_directories", [])
+    if abs_dir not in trusted:
+        trusted.append(abs_dir)
+        trusted.sort()
+    data["trusted_directories"] = trusted
+    _write_codex_trusts(data)
+    return abs_dir
+
+
+def _is_codex_trusted(directory: str) -> bool:
+    """Return True if the directory is in Codex trust metadata."""
+    abs_dir = str(Path(directory).resolve())
+    return abs_dir in _load_codex_trusts().get("trusted_directories", [])
+
+
+def trust_directory(directory: str, target: str = "claude"):
+    """Trust directory for Claude or Codex."""
+    if target == "claude":
+        abs_dir = str(Path(directory).resolve())
+        settings: dict = {}
+        if CLAUDE_JSON_PATH.exists():
+            settings = json.loads(CLAUDE_JSON_PATH.read_text(encoding="utf-8"))
+
+        projects = settings.setdefault("projects", {})
+        proj = projects.setdefault(abs_dir, {})
+        proj["hasTrustDialogAccepted"] = True
+
+        CLAUDE_JSON_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+        print(f"Trusted: {abs_dir}")
+        return
+
+    if target == "codex":
+        abs_dir = _add_codex_trusted_directory(directory)
+        print(f"Trusted for Codex: {abs_dir}")
+        return
+
+    raise ValueError(f"Unsupported trust target: {target}")
+
+
 # ---------------------------------------------------------------------------
 # Mode 3: tmux daemon (WSL/headless only)
 # ---------------------------------------------------------------------------
@@ -1042,6 +1122,11 @@ PERMISSION_FOOTER_RE = re.compile(
 # Trust folder prompt
 TRUST_RE = re.compile(
     r"(trust this|Trust this|trust folder|Trust folder|directory trusted)",
+    re.IGNORECASE,
+)
+
+CODEX_STARTUP_TRUST_RE = re.compile(
+    r"(Trust this directory|trust this directory|do you trust this directory|trust this repository|do you trust this repository)",
     re.IGNORECASE,
 )
 
@@ -1131,9 +1216,163 @@ def detect_prompt(text: str) -> tuple[str, int] | None:
     return None
 
 
+def detect_codex_startup_prompt(text: str) -> bool:
+    """Detect Codex startup trust/setup prompts."""
+    return bool(CODEX_STARTUP_TRUST_RE.search(text))
+
+
 def detect_collapsed(text: str) -> bool:
     """Detect collapsed transcript that needs Ctrl+O to expand."""
     return bool(COLLAPSED_RE.search(text))
+
+
+def _compile_completion_patterns(raw: str | None) -> list[re.Pattern[str]]:
+    """Parse comma-separated regex completion patterns."""
+    if not raw:
+        return []
+    patterns = []
+    for item in raw.split(","):
+        pattern = item.strip()
+        if not pattern:
+            continue
+        patterns.append(re.compile(pattern))
+    return patterns
+
+
+class _CodexRunnerBackend:
+    """Backend interface for interactive Codex sessions."""
+
+    def readline(self) -> str:
+        raise NotImplementedError
+
+    def write(self, value: str) -> None:
+        raise NotImplementedError
+
+    def poll(self) -> int | None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+    def wait(self) -> int:
+        raise NotImplementedError
+
+
+class _SubprocessCodexBackend(_CodexRunnerBackend):
+    """Codex backend backed by subprocess.Popen."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self._proc = proc
+
+    def readline(self) -> str:
+        if self._proc.stdout is None:
+            return ""
+        return self._proc.stdout.readline()
+
+    def write(self, value: str) -> None:
+        if self._proc.stdin is None:
+            return
+        self._proc.stdin.write(value)
+        self._proc.stdin.flush()
+
+    def poll(self) -> int | None:
+        return self._proc.poll()
+
+    def close(self) -> None:
+        if self._proc.stdout is not None:
+            self._proc.stdout.close()
+        if self._proc.stdin is not None:
+            self._proc.stdin.close()
+
+    def wait(self) -> int:
+        return self._proc.wait()
+
+
+def _run_codex_process(
+    backend: _CodexRunnerBackend,
+    completion_patterns: list[re.Pattern[str]],
+    working_directory: str | None = None,
+) -> dict:
+    """Run a Codex process with startup prompt handling and structured completion."""
+    started = datetime.now(timezone.utc)
+    startup_handled = False
+    startup_prompt_seen = False
+    completion_match: str | None = None
+    output_length = 0
+
+    while True:
+        line = backend.readline()
+        if line:
+            print(line, end="", flush=True)
+            output_length += len(line)
+            if not startup_handled and detect_codex_startup_prompt(line):
+                startup_prompt_seen = True
+                startup_handled = True
+                if working_directory and not _is_codex_trusted(working_directory):
+                    _add_codex_trusted_directory(working_directory)
+                backend.write("y\n")
+                print("[agentnanny] auto-accepted Codex startup prompt", file=sys.stderr)
+                continue
+            for pattern in completion_patterns:
+                if pattern.search(line):
+                    completion_match = pattern.pattern
+                    break
+            continue
+
+        if backend.poll() is not None:
+            break
+        time.sleep(0.05)
+
+    ended = datetime.now(timezone.utc)
+    exit_code = backend.poll()
+    if exit_code is None:
+        exit_code = -1
+
+    completion_status = {
+        "matched": completion_match is not None,
+        "pattern": completion_match,
+        "criteria_count": len(completion_patterns),
+        "criteria": [p.pattern for p in completion_patterns],
+    }
+
+    return {
+        "started_at": started.isoformat(timespec="seconds"),
+        "ended_at": ended.isoformat(timespec="seconds"),
+        "return_code": exit_code,
+        "startup_prompt_seen": startup_prompt_seen,
+        "completion": completion_status,
+        "output_length": output_length,
+    }
+
+
+def run_codex_session(
+    command_args: list[str],
+    env: dict[str, str],
+    completion: str | None = None,
+    working_directory: str | None = None,
+) -> dict:
+    """Run a Codex command with startup prompt handling and structured result."""
+    proc = subprocess.Popen(
+        command_args,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        cwd=working_directory,
+        env=env,
+    )
+    backend = _SubprocessCodexBackend(proc)
+    try:
+        completion_patterns = _compile_completion_patterns(completion)
+        return _run_codex_process(
+            backend,
+            completion_patterns,
+            working_directory=working_directory,
+        )
+    finally:
+        backend.close()
+        backend.wait()
 
 
 class PaneState:
@@ -1143,6 +1382,36 @@ class PaneState:
     def __init__(self):
         self.last_action_time: float = 0.0
         self.last_content_hash: int = 0
+
+
+class _InteractiveBackend:
+    """Interactive prompt automation backend."""
+
+    def list_targets(self, target: str | None = None) -> list[str]:
+        raise NotImplementedError
+
+    def capture(self, target: str) -> str:
+        raise NotImplementedError
+
+    def send_keys(self, target: str, keys: str) -> None:
+        raise NotImplementedError
+
+
+class _TmuxBackend(_InteractiveBackend):
+    """tmux-backed prompt automation backend."""
+
+    def __init__(self, session: str, dry_run: bool = False):
+        self._session = session
+        self._dry_run = dry_run
+
+    def list_targets(self, target: str | None = None) -> list[str]:
+        return tmux_list_panes(target or self._session)
+
+    def capture(self, target: str) -> str:
+        return tmux_capture(target)
+
+    def send_keys(self, target: str, keys: str) -> None:
+        tmux_send_keys(target, keys, dry_run=self._dry_run)
 
 
 def tmux_capture(target: str) -> str:
@@ -1185,11 +1454,12 @@ def daemon_loop(session: str, cfg: dict):
     dry_run = bool(daemon_cfg.get("dry_run", False))
 
     pane_states: dict[str, PaneState] = {}
+    backend: _InteractiveBackend = _TmuxBackend(session, dry_run=dry_run)
 
     print(f"agentnanny daemon started — session={session} poll={poll_interval}s cooldown={cooldown}s dry_run={dry_run}")
 
     while True:
-        panes = tmux_list_panes(session)
+        panes = backend.list_targets()
         if not panes:
             time.sleep(poll_interval)
             continue
@@ -1203,7 +1473,7 @@ def daemon_loop(session: str, cfg: dict):
             if now - state.last_action_time < cooldown:
                 continue
 
-            content = tmux_capture(pane)
+            content = backend.capture(pane)
             if not content:
                 continue
 
@@ -1214,7 +1484,7 @@ def daemon_loop(session: str, cfg: dict):
 
             # Check for collapsed transcript first
             if detect_collapsed(content):
-                tmux_send_keys(pane, "C-o", dry_run)
+                backend.send_keys(pane, "C-o")
                 state.last_action_time = now
                 audit_log("daemon", "expanded", "collapsed", f"pane={pane}", cfg)
                 continue
@@ -1227,26 +1497,26 @@ def daemon_loop(session: str, cfg: dict):
             prompt_type, num_options = result
 
             if prompt_type == "continue":
-                tmux_send_keys(pane, "Enter", dry_run)
+                backend.send_keys(pane, "Enter")
                 state.last_action_time = now
                 audit_log("daemon", "approved", "continue", f"pane={pane}", cfg)
             elif prompt_type == "trust":
-                tmux_send_keys(pane, "Enter", dry_run)
+                backend.send_keys(pane, "Enter")
                 state.last_action_time = now
                 audit_log("daemon", "approved", "trust", f"pane={pane}", cfg)
             elif prompt_type == "permission":
                 if num_options >= 3:
                     # 3-option: 1. Yes / 2. Yes, allow for project / 3. No
                     # Cursor starts on 1. Down + Enter → option 2 (allow for project).
-                    tmux_send_keys(pane, "Down", dry_run)
+                    backend.send_keys(pane, "Down")
                     time.sleep(0.05)
-                    tmux_send_keys(pane, "Enter", dry_run)
+                    backend.send_keys(pane, "Enter")
                     state.last_action_time = now
                     audit_log("daemon", "approved", "permission-opt2", f"pane={pane} opts={num_options}", cfg)
                 else:
                     # 2-option: 1. Yes / 2. No (flagged commands)
                     # Cursor on 1. Enter → Yes.
-                    tmux_send_keys(pane, "Enter", dry_run)
+                    backend.send_keys(pane, "Enter")
                     state.last_action_time = now
                     audit_log("daemon", "approved", "permission-opt1", f"pane={pane} opts={num_options}", cfg)
 
@@ -1612,7 +1882,7 @@ def cmd_deactivate(scope_id: str | None, target: str = "claude"):
 
 def cmd_run(profile: str | None, groups: str | None, tools: str | None,
             deny: str | None, ttl: str | None, command_args: list[str],
-            target: str = "claude"):
+            completion: str | None = None, target: str = "claude"):
     """Run a command with session-scoped permissions."""
     if not command_args:
         print("No command specified", file=sys.stderr)
@@ -1634,6 +1904,17 @@ def cmd_run(profile: str | None, groups: str | None, tools: str | None,
         _apply_codex_session(policy, cfg, scope_id)
 
     try:
+        if target == "codex":
+            result = run_codex_session(
+                command_args,
+                env,
+                completion=completion,
+                working_directory=str(Path.cwd()),
+            )
+            if completion is not None:
+                print(json.dumps(result))
+            raise SystemExit(result["return_code"])
+
         result = subprocess.run(command_args, env=env)
         raise SystemExit(result.returncode)
     finally:
@@ -1881,6 +2162,7 @@ def main():
 
     p_trust = sub.add_parser("trust", help="Pre-trust a directory")
     p_trust.add_argument("directory", nargs="?", default=".", help="Directory to trust (default: .)")
+    p_trust.add_argument("--target", choices=TARGETS, default="claude", help="Target agent (default: claude)")
 
     p_watch = sub.add_parser("watch", help="Start tmux daemon (WSL only)")
     p_watch.add_argument("session", nargs="?", help="tmux session name")
@@ -1922,6 +2204,8 @@ def main():
     p_run.add_argument("--ttl", default=None, help="TTL (e.g. 8h, 30m, 3600)")
     p_run.add_argument("--target", choices=TARGETS, default="claude",
                         help="Target agent (default: claude)")
+    p_run.add_argument("--completion", default=None,
+                       help="Comma-separated regex criteria for Codex completion")
     p_run.add_argument("command_args", nargs=argparse.REMAINDER, help="Command to run (after --)")
 
     sub.add_parser("profiles", help="List available profiles")
@@ -1956,7 +2240,7 @@ def main():
         else:
             uninstall_hooks()
     elif args.command == "trust":
-        trust_directory(args.directory)
+        trust_directory(args.directory, args.target)
     elif args.command == "watch":
         start_daemon(args.session)
     elif args.command == "stop":
@@ -1979,7 +2263,16 @@ def main():
     elif args.command == "extend":
         cmd_extend(args.scope_id, args.groups, args.tools, args.deny)
     elif args.command == "run":
-        cmd_run(args.profile, args.groups, args.tools, args.deny, args.ttl, args.command_args, args.target)
+        cmd_run(
+            args.profile,
+            args.groups,
+            args.tools,
+            args.deny,
+            args.ttl,
+            args.command_args,
+            args.completion,
+            args.target,
+        )
     elif args.command == "profiles":
         cmd_list_profiles()
     elif args.command == "sessions":

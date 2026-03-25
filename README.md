@@ -1,12 +1,14 @@
 # agentnanny
 
-Stop clicking "Allow" on every Claude Code permission prompt.
+Stop clicking "Allow" on every Claude Code permission prompt. Works with Codex CLI too.
 
 agentnanny auto-approves the tools you trust (file reads, shell commands, etc.) while still blocking the ones you don't (force-push, rm -rf, DROP TABLE). Each terminal gets its own rules. Permissions expire automatically.
 
 **Before:** Claude asks permission for every file read, every grep, every test run. You click "Allow" hundreds of times a day, or use `--dangerously-skip-permissions` and lose all safety.
 
 **After:** Pick a profile, start working. Safe operations auto-approve. Dangerous commands still prompt.
+
+**Supports:** Claude Code (hooks) and OpenAI Codex CLI (exec policy rules + config patching).
 
 ## Quick Start
 
@@ -107,6 +109,33 @@ python agentnanny.py trust /path/to/project     # pre-trust a directory (optiona
 Verify: `python agentnanny.py status`
 
 Uninstall: `python agentnanny.py uninstall`
+
+### Codex CLI
+
+```bash
+python agentnanny.py install --target codex     # register notify hook in ~/.codex/config.toml
+python agentnanny.py uninstall --target codex   # remove hooks and exec policy rules
+```
+
+`install --target codex` registers agentnanny as a notify handler for audit logging. Use `--target codex` on `activate`, `deactivate`, and `run` to also manage Codex exec policy rules and approval policy.
+
+```bash
+python agentnanny.py run safe-dev --target codex -- codex -q "refactor auth"
+python agentnanny.py activate safe-dev --target codex
+python agentnanny.py deactivate --target codex
+```
+
+Profile-to-Codex approval policy mapping:
+
+| Profile | approval_policy |
+|---|---|
+| reviewer | unless-trusted |
+| safe-dev | unless-trusted |
+| full-dev | on-failure |
+| overnight | on-failure |
+| ci-runner | never |
+
+Deny/allow `Bash(...)` patterns translate to Codex Starlark `prefix_rule()` directives in `~/.codex/rules/`. Non-Bash patterns are skipped (Codex controls file operations via `approval_policy`).
 
 ### Requirements
 
@@ -313,21 +342,23 @@ Detects: permission prompts (selects "allow for project" or "yes"), trust prompt
 
 | Command | Description |
 |---|---|
-| `install` | Register hooks in `~/.claude/settings.json` |
-| `uninstall` | Remove hooks from `~/.claude/settings.json` |
+| `install [--target]` | Register hooks (`claude` or `codex`) |
+| `uninstall [--target]` | Remove hooks (`claude` or `codex`) |
 | `trust [dir]` | Pre-trust a directory |
-| `run <profile> -- <cmd>` | Run command with session-scoped permissions |
-| `activate [profile]` | Create a session policy (prints `export` command) |
-| `deactivate [scope_id]` | Remove a session policy |
+| `run <profile> [--target] -- <cmd>` | Run command with session-scoped permissions |
+| `activate [profile] [--target]` | Create a session policy (prints `export` command) |
+| `deactivate [scope_id] [--target]` | Remove a session policy |
 | `extend [scope_id]` | Add groups, tools, or deny patterns to a session |
 | `profiles` | List available profiles |
 | `list-groups` | List all configured groups |
 | `sessions` | List active session policies |
 | `explain [scope_id]` | Inspect a session policy in detail |
 | `test-policy <tool>` | Dry-run policy evaluation |
-| `status` | Show hook + daemon status |
+| `status` | Show hook + daemon + Codex status |
 | `log` | Tail the audit log (supports `--format`, `--tool`, `--action`, `-n`) |
 | `prune` | Remove expired session files |
 | `init` | Create `.agentnanny.toml` in current directory |
 | `watch [session]` | Start tmux daemon |
 | `stop` | Stop tmux daemon |
+
+`--target` accepts `claude` (default) or `codex`.

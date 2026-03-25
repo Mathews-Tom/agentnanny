@@ -643,6 +643,13 @@ class TestDetectPrompt:
         )
         assert agentnanny.detect_prompt(screen) == ("trust", 0)
 
+    def test_codex_startup_prompt_detected(self):
+        screen = self._make_screen(
+            "Codex starting",
+            "Do you trust this directory?",
+        )
+        assert agentnanny.detect_codex_startup_prompt(screen)
+
     def test_continue_prompt(self):
         screen = self._make_screen(
             "Long output...",
@@ -842,6 +849,16 @@ class TestTrustDirectory:
         proj_key = str((tmp_path / "myproject").resolve())
         assert settings["projects"][proj_key]["hasTrustDialogAccepted"] is True
 
+    def test_trust_codex_new_directory(self, tmp_path):
+        trust_file = tmp_path / "trust.json"
+
+        with patch.object(agentnanny, "CODEX_TRUST_PATH", trust_file):
+            agentnanny.trust_directory(str(tmp_path / "myproject"), target="codex")
+
+        settings = json.loads(trust_file.read_text(encoding="utf-8"))
+        expected = str((tmp_path / "myproject").resolve())
+        assert settings == {"trusted_directories": [expected]}
+
     def test_trust_preserves_existing(self, tmp_path):
         claude_json = tmp_path / ".claude.json"
         claude_json.write_text(json.dumps({
@@ -858,6 +875,18 @@ class TestTrustDirectory:
         assert settings["numStartups"] == 5
         assert settings["projects"]["/existing"]["hasTrustDialogAccepted"] is True
 
+    def test_trust_codex_preserves_existing(self, tmp_path):
+        trust_file = tmp_path / "trust.json"
+        trust_file.write_text(json.dumps({
+            "trusted_directories": ["/existing"],
+        }), encoding="utf-8")
+
+        with patch.object(agentnanny, "CODEX_TRUST_PATH", trust_file):
+            agentnanny.trust_directory(str(tmp_path / "newproject"), target="codex")
+
+        settings = json.loads(trust_file.read_text(encoding="utf-8"))
+        assert settings["trusted_directories"] == ["/existing", str((tmp_path / "newproject").resolve())]
+
     def test_trust_creates_file(self, tmp_path):
         claude_json = tmp_path / ".claude.json"
 
@@ -865,6 +894,11 @@ class TestTrustDirectory:
             agentnanny.trust_directory(str(tmp_path))
 
         assert claude_json.exists()
+
+    def test_trust_invalid_target(self, tmp_path):
+        with patch.object(agentnanny, "CODEX_TRUST_PATH", tmp_path / "trust.json"):
+            with pytest.raises(ValueError, match="Unsupported trust target"):
+                agentnanny.trust_directory(str(tmp_path), target="unknown")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1599,6 +1633,161 @@ class TestExtend:
 
 
 class TestRunWrapper:
+    class _FakeCodexStdout:
+        def __init__(self, chunks: list[str]):
+            self.chunks = chunks
+
+        def readline(self):
+            return self.chunks.pop(0) if self.chunks else ""
+
+        def close(self):
+            self.chunks = []
+
+    class _FakeCodexStdin:
+        def __init__(self):
+            self.sent: list[str] = []
+
+        def write(self, value: str):
+            self.sent.append(value)
+
+        def flush(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeCodexProcess:
+        def __init__(self, chunks: list[str], return_code: int = 0):
+            self.stdout = TestRunWrapper._FakeCodexStdout(chunks)
+            self.stdin = TestRunWrapper._FakeCodexStdin()
+            self._return_code = return_code
+            self.poll_count = 0
+
+        def poll(self) -> int | None:
+            # Simulate process completion only after all output is consumed.
+            if self.stdout.chunks:
+                return None
+            self.poll_count += 1
+            return self._return_code
+
+        def wait(self):
+            return self._return_code
+
+    def test_run_compiles_completion_patterns(self):
+        patterns = agentnanny._compile_completion_patterns("done,success\\s+message")
+        assert len(patterns) == 2
+        assert patterns[0].pattern == "done"
+        assert patterns[1].pattern == "success\\s+message"
+
+    def test_run_codex_process_detects_startup_and_completion(self, tmp_path, monkeypatch):
+        fake_proc = self._FakeCodexProcess([
+            "Starting...\n",
+            "Do you trust this directory?\n",
+            "Task complete\n",
+        ], return_code=0)
+
+        def fake_popen(*_args, **_kwargs):
+            return fake_proc
+
+        monkeypatch.setattr(agentnanny.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(agentnanny, "_is_codex_trusted", lambda directory: False)
+        added: list[str] = []
+        monkeypatch.setattr(agentnanny, "_add_codex_trusted_directory", lambda directory: added.append(directory))
+
+        result = agentnanny.run_codex_session(["codex"], os.environ.copy(), completion="Task complete", working_directory=str(tmp_path))
+
+        assert result["return_code"] == 0
+        assert result["startup_prompt_seen"] is True
+        assert result["completion"]["matched"] is True
+        assert result["completion"]["criteria_count"] == 1
+        assert result["completion"]["criteria"] == ["Task complete"]
+        assert result["output_length"] > 0
+        assert fake_proc.stdin.sent == ["y\n"]
+        assert added == [str(tmp_path)]
+
+    def test_run_codex_process_completes_without_startup(self, tmp_path, monkeypatch):
+        fake_proc = self._FakeCodexProcess([
+            "Booting tools...\n",
+            "still working...\n",
+            "Task complete\n",
+        ], return_code=0)
+
+        def fake_popen(*_args, **_kwargs):
+            return fake_proc
+
+        monkeypatch.setattr(agentnanny.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(agentnanny, "_is_codex_trusted", lambda directory: True)
+
+        result = agentnanny.run_codex_session(
+            ["codex"],
+            os.environ.copy(),
+            completion="Task complete,All done",
+            working_directory=str(tmp_path),
+        )
+
+        assert result["return_code"] == 0
+        assert result["startup_prompt_seen"] is False
+        assert result["completion"]["matched"] is True
+        assert result["completion"]["pattern"] == "Task complete"
+        assert result["completion"]["criteria_count"] == 2
+        assert result["completion"]["criteria"] == ["Task complete", "All done"]
+
+    def test_run_codex_process_with_no_completion_patterns(self, monkeypatch):
+        fake_proc = self._FakeCodexProcess(["done\n"], return_code=0)
+
+        def fake_popen(*_args, **_kwargs):
+            return fake_proc
+
+        monkeypatch.setattr(agentnanny.subprocess, "Popen", fake_popen)
+
+        result = agentnanny.run_codex_session(["codex"], os.environ.copy(), completion=None)
+
+        assert result["completion"]["matched"] is False
+        assert result["completion"]["criteria_count"] == 0
+        assert result["completion"]["criteria"] == []
+        assert result["completion"]["pattern"] is None
+
+    def test_run_codex_uses_codex_runner(self, tmp_path):
+        cfg = {"hooks": {}, "groups": {}, "logging": {"audit_log": os.devnull}}
+        fake_result = {
+            "return_code": 7,
+            "startup_prompt_seen": True,
+            "completion": {"matched": True, "pattern": "done", "criteria_count": 1, "criteria": ["done"]},
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "ended_at": "2026-01-01T00:00:01+00:00",
+            "output_length": 42,
+        }
+        captured = {}
+
+        def fake_run_codex_session(args, env, completion=None, working_directory=None):
+            captured["args"] = args
+            captured["env"] = env.copy()
+            captured["completion"] = completion
+            captured["working_directory"] = working_directory
+            return fake_result
+
+        def fake_apply(_policy, _cfg, scope_id):
+            captured["applied"] = scope_id
+
+        def fake_remove(scope_id):
+            captured["removed"] = scope_id
+
+        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.object(agentnanny, "_apply_codex_session", fake_apply), \
+             patch.object(agentnanny, "_remove_codex_session", fake_remove), \
+             patch.object(agentnanny, "run_codex_session", fake_run_codex_session), \
+             pytest.raises(SystemExit) as exc_info:
+            agentnanny.cmd_run(None, None, None, None, None, ["--", "codex", "run"], "done", "codex")
+
+        assert exc_info.value.code == 7
+        scope_id = captured["env"]["AGENTNANNY_SCOPE"]
+        assert captured["args"] == ["codex", "run"]
+        assert captured["completion"] == "done"
+        assert captured["working_directory"] == str(Path.cwd())
+        assert captured["applied"] == scope_id
+        assert captured["removed"] == scope_id
+
     def test_run_sets_env_and_cleans_up(self, tmp_path):
         cfg = {"hooks": {}, "groups": {}, "logging": {"audit_log": os.devnull}}
         captured_env = {}
