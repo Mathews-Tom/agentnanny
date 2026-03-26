@@ -643,12 +643,15 @@ def _remove_all_codex_rules() -> int:
     return count
 
 
-def install_codex_hooks():
+def install_codex_hooks(*, force: bool = False):
     """Register agentnanny as a notify handler in ~/.codex/config.toml."""
     if CODEX_CONFIG_PATH.exists():
         if HOOK_MARKER in CODEX_CONFIG_PATH.read_text(encoding="utf-8"):
-            print(f"Already installed in {CODEX_CONFIG_PATH}", file=sys.stderr)
-            raise SystemExit(1)
+            if not force:
+                print(f"Already installed in {CODEX_CONFIG_PATH}", file=sys.stderr)
+                print("Use --force to reinstall", file=sys.stderr)
+                raise SystemExit(1)
+            _remove_codex_config_keys(["notify"])
 
     python_cmd = sys.executable.replace("\\", "/")
     script_path = str(SCRIPT_PATH).replace("\\", "/")
@@ -893,7 +896,19 @@ def handle_post_hook():
 HOOK_MARKER = "agentnanny"
 
 
-def install_hooks():
+def _strip_hooks_from(hooks: dict) -> None:
+    """Remove all agentnanny entries from a hooks dict (mutates in place)."""
+    for event_name in ("PermissionRequest", "PreToolUse", "PostToolUse"):
+        entries: list = hooks.get(event_name, [])
+        hooks[event_name] = [
+            entry for entry in entries
+            if not any(HOOK_MARKER in h.get("command", "") for h in entry.get("hooks", []))
+        ]
+        if not hooks[event_name]:
+            hooks.pop(event_name, None)
+
+
+def install_hooks(*, force: bool = False):
     """Register agentnanny as a PermissionRequest hook in Claude Code settings."""
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     settings: dict = {}
@@ -904,11 +919,18 @@ def install_hooks():
     perm_hooks: list = hooks.setdefault("PermissionRequest", [])
 
     # Check if already installed
-    for entry in perm_hooks:
-        for h in entry.get("hooks", []):
-            if HOOK_MARKER in h.get("command", ""):
-                print(f"Already installed in {SETTINGS_PATH}", file=sys.stderr)
-                raise SystemExit(1)
+    already = any(
+        HOOK_MARKER in h.get("command", "")
+        for entry in perm_hooks
+        for h in entry.get("hooks", [])
+    )
+    if already and not force:
+        print(f"Already installed in {SETTINGS_PATH}", file=sys.stderr)
+        print("Use --force to reinstall", file=sys.stderr)
+        raise SystemExit(1)
+    if already and force:
+        # Remove existing hooks before reinstalling
+        _strip_hooks_from(hooks)
 
     script_path = str(SCRIPT_PATH)
     # Use forward slashes for cross-platform compatibility
@@ -2156,6 +2178,8 @@ def main():
     p_install = sub.add_parser("install", help="Register hooks in agent config")
     p_install.add_argument("--target", choices=TARGETS, default="claude",
                            help="Target agent (default: claude)")
+    p_install.add_argument("--force", action="store_true",
+                           help="Reinstall even if already installed")
     p_uninstall = sub.add_parser("uninstall", help="Remove hooks from agent config")
     p_uninstall.add_argument("--target", choices=TARGETS, default="claude",
                              help="Target agent (default: claude)")
@@ -2231,9 +2255,9 @@ def main():
         handle_codex_hook()
     elif args.command == "install":
         if args.target == "codex":
-            install_codex_hooks()
+            install_codex_hooks(force=args.force)
         else:
-            install_hooks()
+            install_hooks(force=args.force)
     elif args.command == "uninstall":
         if args.target == "codex":
             uninstall_codex_hooks()
