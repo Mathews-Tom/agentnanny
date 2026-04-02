@@ -3284,6 +3284,65 @@ class TestApplyRemoveCodexSession:
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "unless-trusted"' in content
 
+    def test_apply_full_dev_sets_never(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        config_path = codex_home / "config.toml"
+        cfg = self._make_cfg()
+        policy = {
+            "_profile_name": "full-dev",
+            "deny": [],
+            "allow_groups": ["filesystem", "shell", "network"],
+            "allow_tools": [],
+        }
+
+        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
+             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+            state = agentnanny._apply_codex_session(policy, cfg, "abc12345")
+
+        content = config_path.read_text(encoding="utf-8")
+        assert 'approval_policy = "never"' in content
+        assert state["previous_approval_policy"] is None
+
+    def test_apply_suspends_mcp_approval_modes(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            '\n'.join([
+                '[mcp_servers.git-tools]',
+                'enabled = true',
+                '',
+                '[mcp_servers.git-tools.tools.git_status]',
+                'approval_mode = "approve"',
+                '',
+                '[mcp_servers.tavily-remote-mcp.tools.tavily_map]',
+                'approval_mode = "approve"',
+                '',
+            ]),
+            encoding="utf-8",
+        )
+        cfg = self._make_cfg()
+        policy = {
+            "_profile_name": "full-dev",
+            "deny": [],
+            "allow_groups": ["filesystem", "shell", "network"],
+            "allow_tools": [],
+        }
+
+        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
+             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+            state = agentnanny._apply_codex_session(policy, cfg, "abc12345")
+
+        content = config_path.read_text(encoding="utf-8")
+        assert 'approval_policy = "never"' in content
+        assert '[mcp_servers.git-tools.tools.git_status]' in content
+        assert '[mcp_servers.tavily-remote-mcp.tools.tavily_map]' in content
+        assert 'approval_mode = "approve"' not in content
+        assert state["suspended_mcp_approval_modes"] == {
+            "mcp_servers.git-tools.tools.git_status": '"approve"',
+            "mcp_servers.tavily-remote-mcp.tools.tavily_map": '"approve"',
+        }
+
     def test_apply_generates_deny_rules(self, tmp_path):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "config.toml"
@@ -3343,6 +3402,40 @@ class TestApplyRemoveCodexSession:
         assert not (rules_dir / "agentnanny-abc12345.rules").exists()
         content = config_path.read_text(encoding="utf-8")
         assert "approval_policy" not in content
+
+    def test_remove_restores_previous_approval_and_mcp_modes(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            '\n'.join([
+                'approval_policy = "never"',
+                '',
+                '[mcp_servers.git-tools.tools.git_status]',
+                '',
+            ]) + '\n',
+            encoding="utf-8",
+        )
+        rules_dir = codex_home / "rules"
+        rules_dir.mkdir()
+        (rules_dir / "agentnanny-abc12345.rules").write_text("# test\n")
+
+        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
+             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+            agentnanny._remove_codex_session(
+                "abc12345",
+                {
+                    "previous_approval_policy": "unless-trusted",
+                    "suspended_mcp_approval_modes": {
+                        "mcp_servers.git-tools.tools.git_status": '"approve"',
+                    },
+                },
+            )
+
+        content = config_path.read_text(encoding="utf-8")
+        assert 'approval_policy = "unless-trusted"' in content
+        assert '[mcp_servers.git-tools.tools.git_status]' in content
+        assert 'approval_mode = "approve"' in content
 
     def test_unknown_profile_defaults_on_request(self, tmp_path):
         codex_home = tmp_path / ".codex"

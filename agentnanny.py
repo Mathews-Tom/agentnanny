@@ -43,8 +43,8 @@ TARGETS = ("claude", "codex")
 CODEX_APPROVAL_MAP: dict[str, str] = {
     "reviewer": "unless-trusted",
     "safe-dev": "unless-trusted",
-    "full-dev": "on-failure",
-    "overnight": "on-failure",
+    "full-dev": "never",
+    "overnight": "never",
     "ci-runner": "never",
 }
 
@@ -585,6 +585,101 @@ def _remove_codex_config_keys(keys: list[str]) -> bool:
     return removed
 
 
+def _get_codex_top_level_value(key: str) -> object | None:
+    """Return the parsed top-level config value for key, or None if missing."""
+    if not CODEX_CONFIG_PATH.exists():
+        return None
+    lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break
+        if stripped.startswith(f"{key} ") or stripped.startswith(f"{key}="):
+            match = re.match(rf"^{re.escape(key)}\s*=\s*(.+)$", stripped)
+            if match:
+                return _parse_toml_value(match.group(1).strip())
+    return None
+
+
+def _suspend_codex_mcp_approval_prompts() -> dict[str, str]:
+    """Remove MCP tool approval overrides so Codex falls back to approval_policy."""
+    if not CODEX_CONFIG_PATH.exists():
+        return {}
+
+    lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+    current_section: str | None = None
+    suspended: dict[str, str] = {}
+    new_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped[1:-1]
+            new_lines.append(line)
+            continue
+
+        if (
+            current_section is not None
+            and current_section.startswith("mcp_servers.")
+            and ".tools." in current_section
+            and (stripped.startswith("approval_mode ") or stripped.startswith("approval_mode="))
+        ):
+            match = re.match(r"^approval_mode\s*=\s*(.+)$", stripped)
+            if match:
+                suspended[current_section] = match.group(1).strip()
+                continue
+
+        new_lines.append(line)
+
+    if suspended:
+        CODEX_CONFIG_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    return suspended
+
+
+def _restore_codex_mcp_approval_prompts(saved_modes: dict[str, str]) -> None:
+    """Restore MCP tool approval overrides previously removed for a session."""
+    if not saved_modes:
+        return
+
+    lines: list[str] = []
+    if CODEX_CONFIG_PATH.exists():
+        lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+
+    current_section: str | None = None
+    seen_sections: set[str] = set()
+    new_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped[1:-1]
+            seen_sections.add(current_section)
+            new_lines.append(line)
+            if current_section in saved_modes:
+                new_lines.append(f"approval_mode = {saved_modes[current_section]}")
+            continue
+
+        if (
+            current_section in saved_modes
+            and (stripped.startswith("approval_mode ") or stripped.startswith("approval_mode="))
+        ):
+            continue
+
+        new_lines.append(line)
+
+    missing_sections = [section for section in saved_modes if section not in seen_sections]
+    if missing_sections and new_lines and new_lines[-1].strip():
+        new_lines.append("")
+    for section in missing_sections:
+        new_lines.append(f"[{section}]")
+        new_lines.append(f"approval_mode = {saved_modes[section]}")
+        new_lines.append("")
+
+    while new_lines and not new_lines[-1].strip():
+        new_lines.pop()
+    CODEX_CONFIG_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
 _BASH_PATTERN_RE = re.compile(r'^Bash\((.+)\)$')
 
 
@@ -698,14 +793,16 @@ def handle_codex_hook():
     audit_log("codex-hook", "executed", tool_name, detail, cfg)
 
 
-def _apply_codex_session(policy: dict, cfg: dict, scope_id: str):
+def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
     """Apply an agentnanny session policy to Codex config and rules."""
     # Determine approval_policy from profile or groups
     profile_name = policy.get("_profile_name")
     approval = CODEX_APPROVAL_MAP.get(profile_name or "", "on-request")
 
+    previous_approval = _get_codex_top_level_value("approval_policy")
     updates: dict[str, object] = {"approval_policy": approval}
     _patch_codex_config(updates)
+    suspended_mcp_modes = _suspend_codex_mcp_approval_prompts()
 
     # Generate exec policy rules from deny + allow patterns
     deny_patterns = policy.get("deny", [])
@@ -733,12 +830,25 @@ def _apply_codex_session(policy: dict, cfg: dict, scope_id: str):
         print(f"# Codex rules: {path}", file=sys.stderr)
 
     print(f"# Codex approval_policy: {approval}", file=sys.stderr)
+    if suspended_mcp_modes:
+        print(f"# Suspended MCP approval prompts: {len(suspended_mcp_modes)}", file=sys.stderr)
+    return {
+        "previous_approval_policy": previous_approval,
+        "suspended_mcp_approval_modes": suspended_mcp_modes,
+    }
 
 
-def _remove_codex_session(scope_id: str):
-    """Remove Codex artifacts for a session."""
+def _remove_codex_session(scope_id: str, prior_state: dict | None = None):
+    """Remove Codex artifacts for a session and restore prior Codex config."""
     _remove_codex_rules(scope_id)
-    _remove_codex_config_keys(["approval_policy"])
+    previous_approval = None if prior_state is None else prior_state.get("previous_approval_policy")
+    if previous_approval is None:
+        _remove_codex_config_keys(["approval_policy"])
+    else:
+        _patch_codex_config({"approval_policy": previous_approval})
+    suspended_mcp_modes = {} if prior_state is None else prior_state.get("suspended_mcp_approval_modes", {})
+    if isinstance(suspended_mcp_modes, dict):
+        _restore_codex_mcp_approval_prompts(suspended_mcp_modes)
 
 
 # ---------------------------------------------------------------------------
@@ -1819,7 +1929,8 @@ def cmd_activate(profile: str | None, groups: str | None, tools: str | None,
         print(f"# TTL: {ttl_seconds}s", file=sys.stderr)
 
     if target == "codex":
-        _apply_codex_session(policy, cfg, scope_id)
+        policy["codex_state"] = _apply_codex_session(policy, cfg, scope_id)
+        save_session_policy(policy)
 
 
 def cmd_extend(scope_id: str | None, groups: str | None, tools: str | None,
@@ -1891,12 +2002,18 @@ def cmd_deactivate(scope_id: str | None, target: str = "claude"):
     if not _valid_scope_id(scope_id):
         print(f"Invalid scope ID: {scope_id}", file=sys.stderr)
         raise SystemExit(1)
+    policy = load_session_policy(scope_id)
+    if policy is None:
+        print(f"No session policy found for {scope_id}", file=sys.stderr)
+        raise SystemExit(1)
+
+    if target == "codex":
+        _remove_codex_session(scope_id, policy.get("codex_state"))
+        print("# Removed Codex exec policy rules", file=sys.stderr)
+
     if delete_session_policy(scope_id):
-        print(f"unset AGENTNANNY_SCOPE")
+        print("unset AGENTNANNY_SCOPE")
         print(f"# Removed session {scope_id}", file=sys.stderr)
-        if target == "codex":
-            _remove_codex_session(scope_id)
-            print("# Removed Codex exec policy rules", file=sys.stderr)
     else:
         print(f"No session policy found for {scope_id}", file=sys.stderr)
         raise SystemExit(1)
@@ -1923,7 +2040,8 @@ def cmd_run(profile: str | None, groups: str | None, tools: str | None,
     env["AGENTNANNY_SCOPE"] = scope_id
 
     if target == "codex":
-        _apply_codex_session(policy, cfg, scope_id)
+        policy["codex_state"] = _apply_codex_session(policy, cfg, scope_id)
+        save_session_policy(policy)
 
     try:
         if target == "codex":
@@ -1940,9 +2058,9 @@ def cmd_run(profile: str | None, groups: str | None, tools: str | None,
         result = subprocess.run(command_args, env=env)
         raise SystemExit(result.returncode)
     finally:
-        delete_session_policy(scope_id)
         if target == "codex":
-            _remove_codex_session(scope_id)
+            _remove_codex_session(scope_id, policy.get("codex_state"))
+        delete_session_policy(scope_id)
 
 
 PROJECT_CONFIG_TEMPLATE = """\
