@@ -131,11 +131,11 @@ Profile-to-Codex approval policy mapping:
 |---|---|
 | reviewer | unless-trusted |
 | safe-dev | unless-trusted |
-| full-dev | on-failure |
-| overnight | on-failure |
+| full-dev | never |
+| overnight | never |
 | ci-runner | never |
 
-Deny/allow `Bash(...)` patterns translate to Codex Starlark `prefix_rule()` directives in `~/.codex/rules/`. Non-Bash patterns are skipped (Codex controls file operations via `approval_policy`).
+Deny/allow `Bash(...)` patterns translate to Codex Starlark `prefix_rule()` directives in `~/.codex/rules/`. Non-Bash patterns are skipped because Codex governs native tool execution through `approval_policy`. When activating a Codex-targeted session, agentnanny also suspends explicit MCP tool `approval_mode` overrides in `~/.codex/config.toml` for the lifetime of the session so those tools fall back to the active top-level policy, then restores the prior MCP settings on deactivate.
 
 ### Requirements
 
