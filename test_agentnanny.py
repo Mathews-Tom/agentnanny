@@ -775,6 +775,22 @@ class TestInstallUninstall:
         perm = settings["hooks"]["PermissionRequest"]
         assert len(perm) == 1  # Not duplicated
 
+    def test_force_reinstall_preserves_permission_hook(self, tmp_path):
+        """Force reinstall must re-register PermissionRequest hook after stripping."""
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text("{}", encoding="utf-8")
+
+        with patch.object(agentnanny, "SETTINGS_PATH", settings_file):
+            agentnanny.install_hooks()
+            agentnanny.install_hooks(force=True)
+
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+        perm = settings["hooks"].get("PermissionRequest", [])
+        assert len(perm) == 1, "PermissionRequest hook missing after force reinstall"
+        assert "agentnanny" in perm[0]["hooks"][0]["command"]
+        post = settings["hooks"].get("PostToolUse", [])
+        assert len(post) == 1, "PostToolUse hook missing after force reinstall"
+
     def test_install_creates_settings_file(self, tmp_path):
         settings_file = tmp_path / ".claude" / "settings.json"
 

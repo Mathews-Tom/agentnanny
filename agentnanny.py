@@ -1041,6 +1041,8 @@ def install_hooks(*, force: bool = False):
     if already and force:
         # Remove existing hooks before reinstalling
         _strip_hooks_from(hooks)
+        # Re-acquire reference — _strip_hooks_from pops empty keys from the dict
+        perm_hooks = hooks.setdefault("PermissionRequest", [])
 
     script_path = str(SCRIPT_PATH)
     # Use forward slashes for cross-platform compatibility
