@@ -175,9 +175,11 @@ class TestHandleHook:
         stdin = StringIO(json.dumps(event))
         stdout = StringIO()
 
+        env_clean = {k: v for k, v in os.environ.items() if k != "AGENTNANNY_SCOPE"}
         with patch.object(sys, "stdin", stdin), \
              patch.object(sys, "stdout", stdout), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+             patch.object(agentnanny, "load_config", return_value=cfg), \
+             patch.dict(os.environ, env_clean, clear=True):
             agentnanny.handle_hook()
 
         raw = stdout.getvalue()
@@ -1769,7 +1771,7 @@ class TestRunWrapper:
         def fake_apply(_policy, _cfg, scope_id):
             captured["applied"] = scope_id
 
-        def fake_remove(scope_id):
+        def fake_remove(scope_id, prior_state=None):
             captured["removed"] = scope_id
 
         with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
