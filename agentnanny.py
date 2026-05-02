@@ -8,6 +8,7 @@ import json
 import os
 import re
 import signal
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -28,21 +29,24 @@ SCRIPT_PATH = Path(__file__).resolve()
 CONFIG_PATH = SCRIPT_PATH.parent / "config.toml"
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 CLAUDE_JSON_PATH = Path.home() / ".claude.json"
-PID_FILE = Path("/tmp/agentnanny.pid") if sys.platform != "win32" else Path(os.environ.get("TEMP", "/tmp")) / "agentnanny.pid"
+PID_FILE = (
+    Path("/tmp/agentnanny.pid")
+    if sys.platform != "win32"
+    else Path(os.environ.get("TEMP", "/tmp")) / "agentnanny.pid"
+)
 SESSION_DIR = Path(tempfile.gettempdir()) / "agentnanny" / "sessions"
 
 # Codex CLI paths
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
-CODEX_TRUST_PATH = CODEX_HOME / "trust.json"
 
 # Supported targets
 TARGETS = ("claude", "codex")
 
 # Map agentnanny profiles to Codex approval_policy values
 CODEX_APPROVAL_MAP: dict[str, str] = {
-    "reviewer": "unless-trusted",
-    "safe-dev": "unless-trusted",
+    "reviewer": "on-request",
+    "safe-dev": "on-request",
     "full-dev": "never",
     "overnight": "never",
     "ci-runner": "never",
@@ -53,14 +57,25 @@ CODEX_APPROVAL_MAP: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 BUILTIN_GROUPS: dict[str, list[str]] = {
-    "read-only":    ["Read", "Glob", "Grep"],
-    "write":        ["Write", "Edit"],
-    "filesystem":   ["Read", "Write", "Edit", "Glob", "Grep"],
-    "shell":        ["Bash"],
-    "safe-shell":   ["Bash(ls*)", "Bash(cat*)", "Bash(head*)", "Bash(grep*)", "Bash(find*)"],
-    "review-shell": ["Bash(git log*)", "Bash(git diff*)", "Bash(git show*)", "Bash(git blame*)"],
-    "network":      ["WebFetch", "WebSearch"],
-    "all":          [".*"],
+    "read-only": ["Read", "Glob", "Grep"],
+    "write": ["Write", "Edit"],
+    "filesystem": ["Read", "Write", "Edit", "Glob", "Grep"],
+    "shell": ["Bash"],
+    "safe-shell": [
+        "Bash(ls*)",
+        "Bash(cat*)",
+        "Bash(head*)",
+        "Bash(grep*)",
+        "Bash(find*)",
+    ],
+    "review-shell": [
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git blame*)",
+    ],
+    "network": ["WebFetch", "WebSearch"],
+    "all": [".*"],
 }
 
 BUILTIN_PROFILES: dict[str, dict] = {
@@ -148,7 +163,7 @@ def parse_toml(text: str) -> dict:
                 current_table = current_table.setdefault(p, {})
             continue
         # Key = value
-        m = re.match(r'^([a-zA-Z0-9_-]+)\s*=\s*(.+)$', line)
+        m = re.match(r"^([a-zA-Z0-9_-]+)\s*=\s*(.+)$", line)
         if not m:
             continue
         key, raw = m.group(1), m.group(2).strip()
@@ -262,7 +277,7 @@ def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool
     """
     for pattern in deny_list:
         # Pattern with tool_input filter: ToolName(input_pattern)
-        m = re.match(r'^(\w+)\((.+)\)$', pattern)
+        m = re.match(r"^(\w+)\((.+)\)$", pattern)
         if m:
             pat_tool, pat_input = m.group(1), m.group(2)
             if pat_tool != tool_name:
@@ -445,7 +460,7 @@ def matches_allow(tool_name: str, tool_input: dict, allow_patterns: list[str]) -
         ".*"                — regex wildcard (match all)
     """
     for pattern in allow_patterns:
-        m = re.match(r'^(\w+)\((.+)\)$', pattern)
+        m = re.match(r"^(\w+)\((.+)\)$", pattern)
         if m:
             pat_tool, pat_input = m.group(1), m.group(2)
             if pat_tool != tool_name:
@@ -487,7 +502,9 @@ def _rotate_log(log_path: str, backup_count: int) -> None:
         os.replace(log_path, f"{log_path}.1")
 
 
-def audit_log(source: str, action: str, tool_name: str, detail: str, cfg: dict | None = None):
+def audit_log(
+    source: str, action: str, tool_name: str, detail: str, cfg: dict | None = None
+):
     """Append a TSV line to the audit log with hardened permissions and size-based rotation."""
     cfg = cfg or load_config()
     log_cfg = cfg.get("logging", {})
@@ -496,7 +513,12 @@ def audit_log(source: str, action: str, tool_name: str, detail: str, cfg: dict |
     max_size_bytes = int(log_cfg.get("max_size_bytes", 10485760))
     backup_count = int(log_cfg.get("backup_count", 3))
 
-    if level == "actions" and action not in ("allowed", "denied", "approved", "expanded"):
+    if level == "actions" and action not in (
+        "allowed",
+        "denied",
+        "approved",
+        "expanded",
+    ):
         return
 
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -526,7 +548,7 @@ def _serialize_toml_value(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return f'"{value}"'
+        return json.dumps(value)
     if isinstance(value, int | float):
         return str(value)
     if isinstance(value, list):
@@ -535,24 +557,43 @@ def _serialize_toml_value(value: object) -> str:
     raise TypeError(f"Unsupported TOML type: {type(value)}")
 
 
+def _first_toml_table_index(lines: list[str]) -> int:
+    """Return the first TOML table line index, or len(lines) when absent."""
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            return idx
+    return len(lines)
+
+
+def _toml_key_line_matches(line: str, key: str) -> bool:
+    """Return True when a TOML line assigns the given bare key."""
+    stripped = line.strip()
+    return stripped.startswith(f"{key} ") or stripped.startswith(f"{key}=")
+
+
 def _patch_codex_config(updates: dict[str, object]) -> Path:
     """Read ~/.codex/config.toml, apply key=value updates, write back.
 
-    Only touches top-level keys. Preserves existing content and comments
-    by replacing matching lines or appending new ones.
+    Only touches top-level keys. Preserves existing content and comments by
+    replacing matching top-level lines or inserting new keys before the first
+    table section.
     """
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     if CODEX_CONFIG_PATH.exists():
         lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
 
+    table_idx = _first_toml_table_index(lines)
+    top_lines = lines[:table_idx]
+    table_lines = lines[table_idx:]
     remaining = dict(updates)
     new_lines: list[str] = []
-    for line in lines:
+    for line in top_lines:
         stripped = line.strip()
         matched = False
         for key in list(remaining):
-            if stripped.startswith(f"{key} ") or stripped.startswith(f"{key}="):
+            if _toml_key_line_matches(stripped, key):
                 new_lines.append(f"{key} = {_serialize_toml_value(remaining.pop(key))}")
                 matched = True
                 break
@@ -561,6 +602,10 @@ def _patch_codex_config(updates: dict[str, object]) -> Path:
 
     for key, val in remaining.items():
         new_lines.append(f"{key} = {_serialize_toml_value(val)}")
+
+    if new_lines and table_lines and new_lines[-1].strip():
+        new_lines.append("")
+    new_lines.extend(table_lines)
 
     content = "\n".join(new_lines) + "\n"
     CODEX_CONFIG_PATH.write_text(content, encoding="utf-8")
@@ -572,14 +617,17 @@ def _remove_codex_config_keys(keys: list[str]) -> bool:
     if not CODEX_CONFIG_PATH.exists():
         return False
     lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+    table_idx = _first_toml_table_index(lines)
+    top_lines = lines[:table_idx]
+    table_lines = lines[table_idx:]
     new_lines = []
     removed = False
-    for line in lines:
-        stripped = line.strip()
-        if any(stripped.startswith(f"{k} ") or stripped.startswith(f"{k}=") for k in keys):
+    for line in top_lines:
+        if any(_toml_key_line_matches(line, k) for k in keys):
             removed = True
             continue
         new_lines.append(line)
+    new_lines.extend(table_lines)
     if removed:
         CODEX_CONFIG_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     return removed
@@ -601,14 +649,81 @@ def _get_codex_top_level_value(key: str) -> object | None:
     return None
 
 
-def _suspend_codex_mcp_approval_prompts() -> dict[str, str]:
+def _patch_codex_table(table: str, updates: dict[str, object]) -> Path:
+    """Patch scalar keys in a single TOML table, creating it if missing."""
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if CODEX_CONFIG_PATH.exists():
+        lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+
+    header = f"[{table}]"
+    start: int | None = None
+    end = len(lines)
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == header:
+            start = idx
+            continue
+        if (
+            start is not None
+            and idx > start
+            and stripped.startswith("[")
+            and stripped.endswith("]")
+        ):
+            end = idx
+            break
+
+    if start is None:
+        new_lines = list(lines)
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append(header)
+        for key, value in updates.items():
+            new_lines.append(f"{key} = {_serialize_toml_value(value)}")
+        CODEX_CONFIG_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        return CODEX_CONFIG_PATH
+
+    remaining = dict(updates)
+    new_lines = list(lines[: start + 1])
+    for line in lines[start + 1 : end]:
+        matched = False
+        for key in list(remaining):
+            if _toml_key_line_matches(line, key):
+                new_lines.append(f"{key} = {_serialize_toml_value(remaining.pop(key))}")
+                matched = True
+                break
+        if not matched:
+            new_lines.append(line)
+
+    for key, value in remaining.items():
+        new_lines.append(f"{key} = {_serialize_toml_value(value)}")
+    new_lines.extend(lines[end:])
+    CODEX_CONFIG_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    return CODEX_CONFIG_PATH
+
+
+_MCP_APPROVAL_KEYS = ("approval_mode", "approval_policy")
+
+
+def _match_toml_assignment(line: str, keys: tuple[str, ...]) -> tuple[str, str] | None:
+    """Return a matched TOML assignment key and raw value for one of keys."""
+    stripped = line.strip()
+    for key in keys:
+        if _toml_key_line_matches(stripped, key):
+            match = re.match(rf"^{re.escape(key)}\s*=\s*(.+)$", stripped)
+            if match:
+                return key, match.group(1).strip()
+    return None
+
+
+def _suspend_codex_mcp_approval_prompts() -> dict[str, dict[str, str]]:
     """Remove MCP tool approval overrides so Codex falls back to approval_policy."""
     if not CODEX_CONFIG_PATH.exists():
         return {}
 
     lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
     current_section: str | None = None
-    suspended: dict[str, str] = {}
+    suspended: dict[str, dict[str, str]] = {}
     new_lines: list[str] = []
 
     for line in lines:
@@ -618,15 +733,11 @@ def _suspend_codex_mcp_approval_prompts() -> dict[str, str]:
             new_lines.append(line)
             continue
 
-        if (
-            current_section is not None
-            and current_section.startswith("mcp_servers.")
-            and ".tools." in current_section
-            and (stripped.startswith("approval_mode ") or stripped.startswith("approval_mode="))
-        ):
-            match = re.match(r"^approval_mode\s*=\s*(.+)$", stripped)
+        if current_section is not None and current_section.startswith("mcp_servers."):
+            match = _match_toml_assignment(stripped, _MCP_APPROVAL_KEYS)
             if match:
-                suspended[current_section] = match.group(1).strip()
+                key, raw_value = match
+                suspended.setdefault(current_section, {})[key] = raw_value
                 continue
 
         new_lines.append(line)
@@ -636,10 +747,26 @@ def _suspend_codex_mcp_approval_prompts() -> dict[str, str]:
     return suspended
 
 
-def _restore_codex_mcp_approval_prompts(saved_modes: dict[str, str]) -> None:
+def _normalize_saved_mcp_modes(
+    saved_modes: dict[str, object],
+) -> dict[str, dict[str, str]]:
+    """Normalize current and legacy saved MCP approval state."""
+    normalized: dict[str, dict[str, str]] = {}
+    for section, value in saved_modes.items():
+        if isinstance(value, dict):
+            normalized[section] = {
+                str(key): str(raw_value) for key, raw_value in value.items()
+            }
+        elif isinstance(value, str):
+            normalized[section] = {"approval_mode": value}
+    return normalized
+
+
+def _restore_codex_mcp_approval_prompts(saved_modes: dict[str, object]) -> None:
     """Restore MCP tool approval overrides previously removed for a session."""
     if not saved_modes:
         return
+    saved = _normalize_saved_mcp_modes(saved_modes)
 
     lines: list[str] = []
     if CODEX_CONFIG_PATH.exists():
@@ -655,24 +782,26 @@ def _restore_codex_mcp_approval_prompts(saved_modes: dict[str, str]) -> None:
             current_section = stripped[1:-1]
             seen_sections.add(current_section)
             new_lines.append(line)
-            if current_section in saved_modes:
-                new_lines.append(f"approval_mode = {saved_modes[current_section]}")
+            if current_section in saved:
+                for key, value in saved[current_section].items():
+                    new_lines.append(f"{key} = {value}")
             continue
 
         if (
-            current_section in saved_modes
-            and (stripped.startswith("approval_mode ") or stripped.startswith("approval_mode="))
+            current_section in saved
+            and _match_toml_assignment(stripped, _MCP_APPROVAL_KEYS) is not None
         ):
             continue
 
         new_lines.append(line)
 
-    missing_sections = [section for section in saved_modes if section not in seen_sections]
+    missing_sections = [section for section in saved if section not in seen_sections]
     if missing_sections and new_lines and new_lines[-1].strip():
         new_lines.append("")
     for section in missing_sections:
         new_lines.append(f"[{section}]")
-        new_lines.append(f"approval_mode = {saved_modes[section]}")
+        for key, value in saved[section].items():
+            new_lines.append(f"{key} = {value}")
         new_lines.append("")
 
     while new_lines and not new_lines[-1].strip():
@@ -680,7 +809,7 @@ def _restore_codex_mcp_approval_prompts(saved_modes: dict[str, str]) -> None:
     CODEX_CONFIG_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
-_BASH_PATTERN_RE = re.compile(r'^Bash\((.+)\)$')
+_BASH_PATTERN_RE = re.compile(r"^Bash\((.+)\)$")
 
 
 def _patterns_to_codex_rules(patterns: list[str], decision: str) -> str:
@@ -701,8 +830,14 @@ def _patterns_to_codex_rules(patterns: list[str], decision: str) -> str:
         for segment in m.group(1).split("|"):
             prefix = segment.rstrip("*").rstrip()
             if prefix:
+                try:
+                    argv_prefix = shlex.split(prefix)
+                except ValueError:
+                    continue
+                if not argv_prefix:
+                    continue
                 rules.append(
-                    f'prefix_rule(pattern=["{prefix}"], decision="{decision}",'
+                    f'prefix_rule(pattern={_serialize_toml_value(argv_prefix)}, decision="{decision}",'
                     f' justification="{justification} by agentnanny")'
                 )
     return "\n".join(rules)
@@ -738,34 +873,132 @@ def _remove_all_codex_rules() -> int:
     return count
 
 
-def install_codex_hooks(*, force: bool = False):
-    """Register agentnanny as a notify handler in ~/.codex/config.toml."""
-    if CODEX_CONFIG_PATH.exists():
-        if HOOK_MARKER in CODEX_CONFIG_PATH.read_text(encoding="utf-8"):
-            if not force:
-                print(f"Already installed in {CODEX_CONFIG_PATH}", file=sys.stderr)
-                print("Use --force to reinstall", file=sys.stderr)
-                raise SystemExit(1)
-            _remove_codex_config_keys(["notify"])
+def _prune_stale_codex_rules(active_scope_ids: set[str]) -> int:
+    """Remove agentnanny Codex rules without a matching active session."""
+    rules_dir = CODEX_HOME / "rules"
+    if not rules_dir.exists():
+        return 0
+    count = 0
+    for path in rules_dir.glob("agentnanny-*.rules"):
+        scope_id = path.stem.removeprefix("agentnanny-")
+        if scope_id not in active_scope_ids:
+            path.unlink()
+            count += 1
+    return count
 
+
+def _strip_codex_agentnanny_hook_block(lines: list[str]) -> tuple[list[str], bool]:
+    """Remove the marker-delimited Codex hook block created by agentnanny."""
+    new_lines: list[str] = []
+    in_block = False
+    removed = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == CODEX_HOOK_MARKER_START:
+            in_block = True
+            removed = True
+            continue
+        if in_block:
+            if stripped == CODEX_HOOK_MARKER_END:
+                in_block = False
+            continue
+        new_lines.append(line)
+    return new_lines, removed
+
+
+def _strip_codex_legacy_notify(lines: list[str]) -> tuple[list[str], bool]:
+    """Remove legacy agentnanny notify lines, including misplaced table-scoped ones."""
+    new_lines: list[str] = []
+    removed = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("notify") and HOOK_MARKER in stripped:
+            removed = True
+            continue
+        new_lines.append(line)
+    return new_lines, removed
+
+
+def _codex_hook_command(mode: str) -> str:
+    """Return a shell command for a Codex lifecycle hook."""
     python_cmd = sys.executable.replace("\\", "/")
     script_path = str(SCRIPT_PATH).replace("\\", "/")
-    notify_argv = [python_cmd, script_path, "codex-hook"]
+    return f'"{python_cmd}" "{script_path}" {mode}'
 
-    _patch_codex_config({"notify": notify_argv})
-    print(f"Installed notify hook in {CODEX_CONFIG_PATH}")
+
+def _codex_hook_block() -> str:
+    """Return the marker-delimited Codex lifecycle hook TOML block."""
+    permission_cmd = _serialize_toml_value(_codex_hook_command("hook"))
+    post_cmd = _serialize_toml_value(_codex_hook_command("post-hook"))
+    return "\n".join(
+        [
+            CODEX_HOOK_MARKER_START,
+            "[[hooks.PermissionRequest]]",
+            'matcher = ""',
+            "",
+            "[[hooks.PermissionRequest.hooks]]",
+            'type = "command"',
+            f"command = {permission_cmd}",
+            "timeout = 30",
+            'statusMessage = "Checking agentnanny policy"',
+            "",
+            "[[hooks.PostToolUse]]",
+            'matcher = ""',
+            "",
+            "[[hooks.PostToolUse.hooks]]",
+            'type = "command"',
+            f"command = {post_cmd}",
+            "timeout = 30",
+            'statusMessage = "Recording agentnanny audit event"',
+            CODEX_HOOK_MARKER_END,
+        ]
+    )
+
+
+def _codex_hooks_installed() -> bool:
+    """Return True when agentnanny Codex lifecycle hooks are installed."""
+    if not CODEX_CONFIG_PATH.exists():
+        return False
+    text = CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+    return CODEX_HOOK_MARKER_START in text and CODEX_HOOK_MARKER_END in text
+
+
+def install_codex_hooks(*, force: bool = False):
+    """Register agentnanny lifecycle hooks in ~/.codex/config.toml."""
+    if CODEX_CONFIG_PATH.exists() and _codex_hooks_installed():
+        if not force:
+            print(f"Already installed in {CODEX_CONFIG_PATH}", file=sys.stderr)
+            print("Use --force to reinstall", file=sys.stderr)
+            raise SystemExit(1)
+
+    CODEX_HOME.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if CODEX_CONFIG_PATH.exists():
+        lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+    lines, _ = _strip_codex_agentnanny_hook_block(lines)
+    lines, _ = _strip_codex_legacy_notify(lines)
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend(_codex_hook_block().splitlines())
+    CODEX_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _patch_codex_table("features", {"codex_hooks": True})
+    print(f"Installed Codex lifecycle hooks in {CODEX_CONFIG_PATH}")
 
 
 def uninstall_codex_hooks():
-    """Remove agentnanny notify handler from ~/.codex/config.toml."""
+    """Remove agentnanny Codex lifecycle hooks and generated rules."""
     if not CODEX_CONFIG_PATH.exists():
         print("No Codex config file found", file=sys.stderr)
         raise SystemExit(1)
 
-    removed = _remove_codex_config_keys(["notify"])
+    lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+    lines, removed_block = _strip_codex_agentnanny_hook_block(lines)
+    lines, removed_notify = _strip_codex_legacy_notify(lines)
+    removed = removed_block or removed_notify
     if not removed:
         print("No agentnanny hooks found in Codex config", file=sys.stderr)
         raise SystemExit(1)
+    CODEX_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     count = _remove_all_codex_rules()
     print(f"Removed agentnanny hooks from {CODEX_CONFIG_PATH}")
@@ -831,7 +1064,10 @@ def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
 
     print(f"# Codex approval_policy: {approval}", file=sys.stderr)
     if suspended_mcp_modes:
-        print(f"# Suspended MCP approval prompts: {len(suspended_mcp_modes)}", file=sys.stderr)
+        print(
+            f"# Suspended MCP approval prompts: {len(suspended_mcp_modes)}",
+            file=sys.stderr,
+        )
     return {
         "previous_approval_policy": previous_approval,
         "suspended_mcp_approval_modes": suspended_mcp_modes,
@@ -841,12 +1077,18 @@ def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
 def _remove_codex_session(scope_id: str, prior_state: dict | None = None):
     """Remove Codex artifacts for a session and restore prior Codex config."""
     _remove_codex_rules(scope_id)
-    previous_approval = None if prior_state is None else prior_state.get("previous_approval_policy")
+    previous_approval = (
+        None if prior_state is None else prior_state.get("previous_approval_policy")
+    )
     if previous_approval is None:
         _remove_codex_config_keys(["approval_policy"])
     else:
         _patch_codex_config({"approval_policy": previous_approval})
-    suspended_mcp_modes = {} if prior_state is None else prior_state.get("suspended_mcp_approval_modes", {})
+    suspended_mcp_modes = (
+        {}
+        if prior_state is None
+        else prior_state.get("suspended_mcp_approval_modes", {})
+    )
     if isinstance(suspended_mcp_modes, dict):
         _restore_codex_mcp_approval_prompts(suspended_mcp_modes)
 
@@ -859,26 +1101,32 @@ def _remove_codex_session(scope_id: str, prior_state: dict | None = None):
 def _hook_deny(tool_name: str, message: str, cfg: dict):
     """Output a deny decision and audit log it."""
     audit_log("hook", "denied", tool_name, message, cfg)
-    json.dump({
-        "hookSpecificOutput": {
-            "hookEventName": "PermissionRequest",
-            "decision": {
-                "behavior": "deny",
-                "message": f"agentnanny: {message}",
-            },
-        }
-    }, sys.stdout)
+    json.dump(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {
+                    "behavior": "deny",
+                    "message": f"agentnanny: {message}",
+                },
+            }
+        },
+        sys.stdout,
+    )
 
 
 def _hook_allow(tool_name: str, detail: str, cfg: dict):
     """Output an allow decision and audit log it."""
     audit_log("hook", "allowed", tool_name, detail, cfg)
-    json.dump({
-        "hookSpecificOutput": {
-            "hookEventName": "PermissionRequest",
-            "decision": {"behavior": "allow"},
-        }
-    }, sys.stdout)
+    json.dump(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {"behavior": "allow"},
+            }
+        },
+        sys.stdout,
+    )
 
 
 def _read_hook_event() -> dict | None:
@@ -1004,6 +1252,8 @@ def handle_post_hook():
 # ---------------------------------------------------------------------------
 
 HOOK_MARKER = "agentnanny"
+CODEX_HOOK_MARKER_START = "# agentnanny codex hooks start"
+CODEX_HOOK_MARKER_END = "# agentnanny codex hooks end"
 
 
 def _strip_hooks_from(hooks: dict) -> None:
@@ -1011,8 +1261,11 @@ def _strip_hooks_from(hooks: dict) -> None:
     for event_name in ("PermissionRequest", "PreToolUse", "PostToolUse"):
         entries: list = hooks.get(event_name, [])
         hooks[event_name] = [
-            entry for entry in entries
-            if not any(HOOK_MARKER in h.get("command", "") for h in entry.get("hooks", []))
+            entry
+            for entry in entries
+            if not any(
+                HOOK_MARKER in h.get("command", "") for h in entry.get("hooks", [])
+            )
         ]
         if not hooks[event_name]:
             hooks.pop(event_name, None)
@@ -1054,10 +1307,12 @@ def install_hooks(*, force: bool = False):
 
     hook_entry = {
         "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": f'"{python_cmd}" "{script_path}" hook',
-        }],
+        "hooks": [
+            {
+                "type": "command",
+                "command": f'"{python_cmd}" "{script_path}" hook',
+            }
+        ],
     }
 
     perm_hooks.append(hook_entry)
@@ -1072,10 +1327,12 @@ def install_hooks(*, force: bool = False):
     if not already_installed:
         post_hook_entry = {
             "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": f'"{python_cmd}" "{script_path}" post-hook',
-            }],
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f'"{python_cmd}" "{script_path}" post-hook',
+                }
+            ],
         }
         post_hooks.append(post_hook_entry)
 
@@ -1129,66 +1386,32 @@ def uninstall_hooks():
 # ---------------------------------------------------------------------------
 
 
-def trust_directory(directory: str):
-    """Write trust entry to ~/.claude.json so the trust prompt never appears."""
-    abs_dir = str(Path(directory).resolve())
-    settings: dict = {}
-    if CLAUDE_JSON_PATH.exists():
-        settings = json.loads(CLAUDE_JSON_PATH.read_text(encoding="utf-8"))
-
-    projects = settings.setdefault("projects", {})
-    proj = projects.setdefault(abs_dir, {})
-    proj["hasTrustDialogAccepted"] = True
-
-    CLAUDE_JSON_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    print(f"Trusted: {abs_dir}")
-
-
-def _load_codex_trusts() -> dict[str, dict]:
-    """Load Codex trust metadata from CODEX_TRUST_PATH."""
-    if not CODEX_TRUST_PATH.exists():
-        return {"trusted_directories": []}
-    try:
-        data = json.loads(CODEX_TRUST_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("trusted_directories"), list):
-            return data
-    except (json.JSONDecodeError, OSError):
-        return {"trusted_directories": []}
-    return {"trusted_directories": []}
-
-
-def _write_codex_trusts(data: dict) -> None:
-    """Persist Codex trust metadata with owner-only permissions."""
-    CODEX_HOME.mkdir(parents=True, exist_ok=True)
-    tmp = CODEX_TRUST_PATH.with_suffix(".tmp")
-    fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
-            f.write("\n")
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    os.replace(str(tmp), CODEX_TRUST_PATH)
-
-
 def _add_codex_trusted_directory(directory: str) -> str:
-    """Add a directory to Codex trust metadata and return the canonical path."""
+    """Add a directory to Codex project trust config and return the canonical path."""
     abs_dir = str(Path(directory).resolve())
-    data = _load_codex_trusts()
-    trusted = data.get("trusted_directories", [])
-    if abs_dir not in trusted:
-        trusted.append(abs_dir)
-        trusted.sort()
-    data["trusted_directories"] = trusted
-    _write_codex_trusts(data)
+    _patch_codex_table(f"projects.{json.dumps(abs_dir)}", {"trust_level": "trusted"})
     return abs_dir
 
 
 def _is_codex_trusted(directory: str) -> bool:
-    """Return True if the directory is in Codex trust metadata."""
+    """Return True if the directory is trusted in Codex config."""
     abs_dir = str(Path(directory).resolve())
-    return abs_dir in _load_codex_trusts().get("trusted_directories", [])
+    if not CODEX_CONFIG_PATH.exists():
+        return False
+    table_header = f"[projects.{json.dumps(abs_dir)}]"
+    lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_table = stripped == table_header
+            continue
+        if in_table and _toml_key_line_matches(line, "trust_level"):
+            match = re.match(r"^trust_level\s*=\s*(.+)$", stripped)
+            return bool(
+                match and _parse_toml_value(match.group(1).strip()) == "trusted"
+            )
+    return False
 
 
 def trust_directory(directory: str, target: str = "claude"):
@@ -1203,7 +1426,9 @@ def trust_directory(directory: str, target: str = "claude"):
         proj = projects.setdefault(abs_dir, {})
         proj["hasTrustDialogAccepted"] = True
 
-        CLAUDE_JSON_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+        CLAUDE_JSON_PATH.write_text(
+            json.dumps(settings, indent=2) + "\n", encoding="utf-8"
+        )
         print(f"Trusted: {abs_dir}")
         return
 
@@ -1297,7 +1522,7 @@ def _extract_below_separator(text: str) -> str:
             sep_idx = i
             break
     if sep_idx is not None:
-        return "\n".join(lines[sep_idx + 1:])
+        return "\n".join(lines[sep_idx + 1 :])
     return "\n".join(lines[-15:])
 
 
@@ -1445,7 +1670,9 @@ def _run_codex_process(
                 if working_directory and not _is_codex_trusted(working_directory):
                     _add_codex_trusted_directory(working_directory)
                 backend.write("y\n")
-                print("[agentnanny] auto-accepted Codex startup prompt", file=sys.stderr)
+                print(
+                    "[agentnanny] auto-accepted Codex startup prompt", file=sys.stderr
+                )
                 continue
             for pattern in completion_patterns:
                 if pattern.search(line):
@@ -1511,6 +1738,7 @@ def run_codex_session(
 
 class PaneState:
     """Per-pane state for cooldown tracking."""
+
     __slots__ = ("last_action_time", "last_content_hash")
 
     def __init__(self):
@@ -1552,7 +1780,9 @@ def tmux_capture(target: str) -> str:
     """Capture tmux pane content."""
     result = subprocess.run(
         ["tmux", "capture-pane", "-p", "-t", target],
-        capture_output=True, text=True, timeout=5,
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
     if result.returncode != 0:
         return ""
@@ -1565,7 +1795,8 @@ def tmux_send_keys(target: str, keys: str, dry_run: bool = False):
         return
     subprocess.run(
         ["tmux", "send-keys", "-t", target, keys],
-        capture_output=True, timeout=5,
+        capture_output=True,
+        timeout=5,
     )
 
 
@@ -1573,7 +1804,9 @@ def tmux_list_panes(session: str) -> list[str]:
     """List all pane targets in a tmux session."""
     result = subprocess.run(
         ["tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}"],
-        capture_output=True, text=True, timeout=5,
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
     if result.returncode != 0:
         return []
@@ -1590,7 +1823,9 @@ def daemon_loop(session: str, cfg: dict):
     pane_states: dict[str, PaneState] = {}
     backend: _InteractiveBackend = _TmuxBackend(session, dry_run=dry_run)
 
-    print(f"agentnanny daemon started — session={session} poll={poll_interval}s cooldown={cooldown}s dry_run={dry_run}")
+    print(
+        f"agentnanny daemon started — session={session} poll={poll_interval}s cooldown={cooldown}s dry_run={dry_run}"
+    )
 
     while True:
         panes = backend.list_targets()
@@ -1646,13 +1881,25 @@ def daemon_loop(session: str, cfg: dict):
                     time.sleep(0.05)
                     backend.send_keys(pane, "Enter")
                     state.last_action_time = now
-                    audit_log("daemon", "approved", "permission-opt2", f"pane={pane} opts={num_options}", cfg)
+                    audit_log(
+                        "daemon",
+                        "approved",
+                        "permission-opt2",
+                        f"pane={pane} opts={num_options}",
+                        cfg,
+                    )
                 else:
                     # 2-option: 1. Yes / 2. No (flagged commands)
                     # Cursor on 1. Enter → Yes.
                     backend.send_keys(pane, "Enter")
                     state.last_action_time = now
-                    audit_log("daemon", "approved", "permission-opt1", f"pane={pane} opts={num_options}", cfg)
+                    audit_log(
+                        "daemon",
+                        "approved",
+                        "permission-opt1",
+                        f"pane={pane} opts={num_options}",
+                        cfg,
+                    )
 
         time.sleep(poll_interval)
 
@@ -1758,23 +2005,33 @@ def show_status():
     print()
     print("─── Codex CLI ───")
     if CODEX_CONFIG_PATH.exists():
-        codex_text = CODEX_CONFIG_PATH.read_text(encoding="utf-8")
-        codex_installed = HOOK_MARKER in codex_text
-        print(f"Notify hook installed: {'yes' if codex_installed else 'no'}")
+        codex_installed = _codex_hooks_installed()
+        print(f"Lifecycle hooks installed: {'yes' if codex_installed else 'no'}")
         print(f"Config: {CODEX_CONFIG_PATH}")
         # Parse approval_policy from config
-        codex_cfg = parse_toml(codex_text)
-        ap = codex_cfg.get("approval_policy")
+        ap = _get_codex_top_level_value("approval_policy")
         if ap:
             print(f"Approval policy: {ap}")
     else:
-        print("Notify hook installed: no (no config file)")
+        print("Lifecycle hooks installed: no (no config file)")
 
     rules_dir = CODEX_HOME / "rules"
     if rules_dir.exists():
         rules_files = list(rules_dir.glob("agentnanny-*.rules"))
         if rules_files:
             print(f"Exec policy rules: {len(rules_files)} file(s)")
+            active_scope_ids = {
+                str(policy.get("scope_id"))
+                for policy in list_session_policies()
+                if _valid_scope_id(str(policy.get("scope_id", "")))
+            }
+            stale = [
+                path
+                for path in rules_files
+                if path.stem.removeprefix("agentnanny-") not in active_scope_ids
+            ]
+            if stale:
+                print(f"Stale exec policy rules: {len(stale)} file(s)")
 
 
 def show_log(
@@ -1838,7 +2095,12 @@ def show_log(
     else:
         # raw: original TSV lines
         for rec in records:
-            print("\t".join(rec[k] for k in ["timestamp", "source", "action", "tool_name", "detail"]))
+            print(
+                "\t".join(
+                    rec[k]
+                    for k in ["timestamp", "source", "action", "tool_name", "detail"]
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1858,9 +2120,14 @@ def _parse_ttl(ttl_str: str) -> int:
     return int(ttl_str)
 
 
-def _build_policy(profile: str | None, groups: str | None, tools: str | None,
-                  deny: str | None, ttl: str | None,
-                  cfg: dict) -> tuple[dict, str]:
+def _build_policy(
+    profile: str | None,
+    groups: str | None,
+    tools: str | None,
+    deny: str | None,
+    ttl: str | None,
+    cfg: dict,
+) -> tuple[dict, str]:
     """Build a session policy dict from CLI args. Returns (policy, scope_id)."""
     if profile:
         p = resolve_profile(profile, cfg)
@@ -1872,7 +2139,9 @@ def _build_policy(profile: str | None, groups: str | None, tools: str | None,
         base_deny = []
         base_ttl = "0"
 
-    group_names = base_groups + ([g.strip() for g in groups.split(",")] if groups else [])
+    group_names = base_groups + (
+        [g.strip() for g in groups.split(",")] if groups else []
+    )
     tool_names = [t.strip() for t in tools.split(",")] if tools else []
     deny_patterns = base_deny + ([d.strip() for d in deny.split(",")] if deny else [])
     ttl_seconds = _parse_ttl(ttl if ttl is not None else base_ttl)
@@ -1881,7 +2150,7 @@ def _build_policy(profile: str | None, groups: str | None, tools: str | None,
         resolve_groups(group_names, cfg)
 
     for pat in deny_patterns:
-        m_pat = re.match(r'^(\w+)\((.+)\)$', pat)
+        m_pat = re.match(r"^(\w+)\((.+)\)$", pat)
         if m_pat:
             try:
                 re.compile(_glob_to_regex(m_pat.group(2)))
@@ -1907,8 +2176,14 @@ def _build_policy(profile: str | None, groups: str | None, tools: str | None,
     return policy, scope_id
 
 
-def cmd_activate(profile: str | None, groups: str | None, tools: str | None,
-                 deny: str | None, ttl: str | None, target: str = "claude"):
+def cmd_activate(
+    profile: str | None,
+    groups: str | None,
+    tools: str | None,
+    deny: str | None,
+    ttl: str | None,
+    target: str = "claude",
+):
     """Create a session policy and print the env export command."""
     cfg = load_config()
     policy, scope_id = _build_policy(profile, groups, tools, deny, ttl, cfg)
@@ -1935,8 +2210,9 @@ def cmd_activate(profile: str | None, groups: str | None, tools: str | None,
         save_session_policy(policy)
 
 
-def cmd_extend(scope_id: str | None, groups: str | None, tools: str | None,
-               deny: str | None):
+def cmd_extend(
+    scope_id: str | None, groups: str | None, tools: str | None, deny: str | None
+):
     """Add groups, tools, or deny patterns to an existing session policy."""
     scope_id = scope_id or os.environ.get("AGENTNANNY_SCOPE")
     if not scope_id:
@@ -2021,9 +2297,16 @@ def cmd_deactivate(scope_id: str | None, target: str = "claude"):
         raise SystemExit(1)
 
 
-def cmd_run(profile: str | None, groups: str | None, tools: str | None,
-            deny: str | None, ttl: str | None, command_args: list[str],
-            completion: str | None = None, target: str = "claude"):
+def cmd_run(
+    profile: str | None,
+    groups: str | None,
+    tools: str | None,
+    deny: str | None,
+    ttl: str | None,
+    command_args: list[str],
+    completion: str | None = None,
+    target: str = "claude",
+):
     """Run a command with session-scoped permissions."""
     if not command_args:
         print("No command specified", file=sys.stderr)
@@ -2191,28 +2474,39 @@ def cmd_sessions():
         print(f"{scope_id}  age={age}s  {ttl_str}  groups=[{groups}]  tools=[{tools}]")
 
 
-def cmd_prune():
-    """Remove expired session policy files."""
+def cmd_prune(target: str = "claude"):
+    """Remove expired session policy files and stale target artifacts."""
+    active_scope_ids: set[str] = set()
     if not SESSION_DIR.exists():
         print("No sessions directory")
-        return
-    now = datetime.now(timezone.utc)
-    removed = 0
-    for path in SESSION_DIR.glob("*.json"):
-        try:
-            policy = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            path.unlink(missing_ok=True)
-            removed += 1
-            continue
-        ttl = policy.get("ttl_seconds", 0)
-        if ttl > 0:
-            created = datetime.fromisoformat(policy["created"])
-            elapsed = (now - created).total_seconds()
-            if elapsed > ttl:
+        removed = 0
+    else:
+        now = datetime.now(timezone.utc)
+        removed = 0
+        for path in SESSION_DIR.glob("*.json"):
+            try:
+                policy = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
                 path.unlink(missing_ok=True)
                 removed += 1
-    print(f"Pruned {removed} expired session(s)")
+                continue
+            scope_id = str(policy.get("scope_id", ""))
+            ttl = policy.get("ttl_seconds", 0)
+            expired = False
+            if ttl > 0:
+                created = datetime.fromisoformat(policy["created"])
+                elapsed = (now - created).total_seconds()
+                expired = elapsed > ttl
+            if expired:
+                path.unlink(missing_ok=True)
+                removed += 1
+            elif _valid_scope_id(scope_id):
+                active_scope_ids.add(scope_id)
+        print(f"Pruned {removed} expired session(s)")
+
+    if target == "codex":
+        stale_rules = _prune_stale_codex_rules(active_scope_ids)
+        print(f"Pruned {stale_rules} stale Codex rule file(s)")
 
 
 # ---------------------------------------------------------------------------
@@ -2221,7 +2515,10 @@ def cmd_prune():
 
 
 def evaluate_policy(
-    tool_name: str, tool_input: dict, cfg: dict, scope_id: str | None = None,
+    tool_name: str,
+    tool_input: dict,
+    cfg: dict,
+    scope_id: str | None = None,
 ) -> tuple[str, str]:
     """Evaluate a tool call against the current policy without side effects.
 
@@ -2234,7 +2531,7 @@ def evaluate_policy(
 
     # Global deny always applies
     if matches_deny(tool_name, tool_input, global_deny):
-        return ("deny", f"blocked by global deny list")
+        return ("deny", "blocked by global deny list")
 
     if not scope_id:
         # Legacy mode — check config allow list
@@ -2292,21 +2589,41 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("hook", help="Hook handler (called by Claude Code, not user)")
-    sub.add_parser("post-hook", help="PostToolUse hook handler (called by Claude Code, not user)")
-    sub.add_parser("codex-hook", help="Notify handler (called by Codex CLI, not user)")
+    sub.add_parser(
+        "post-hook", help="PostToolUse hook handler (called by Claude Code, not user)"
+    )
+    sub.add_parser(
+        "codex-hook", help="Legacy notify handler (called by Codex CLI, not user)"
+    )
 
     p_install = sub.add_parser("install", help="Register hooks in agent config")
-    p_install.add_argument("--target", choices=TARGETS, default="claude",
-                           help="Target agent (default: claude)")
-    p_install.add_argument("--force", action="store_true",
-                           help="Reinstall even if already installed")
+    p_install.add_argument(
+        "--target",
+        choices=TARGETS,
+        default="claude",
+        help="Target agent (default: claude)",
+    )
+    p_install.add_argument(
+        "--force", action="store_true", help="Reinstall even if already installed"
+    )
     p_uninstall = sub.add_parser("uninstall", help="Remove hooks from agent config")
-    p_uninstall.add_argument("--target", choices=TARGETS, default="claude",
-                             help="Target agent (default: claude)")
+    p_uninstall.add_argument(
+        "--target",
+        choices=TARGETS,
+        default="claude",
+        help="Target agent (default: claude)",
+    )
 
     p_trust = sub.add_parser("trust", help="Pre-trust a directory")
-    p_trust.add_argument("directory", nargs="?", default=".", help="Directory to trust (default: .)")
-    p_trust.add_argument("--target", choices=TARGETS, default="claude", help="Target agent (default: claude)")
+    p_trust.add_argument(
+        "directory", nargs="?", default=".", help="Directory to trust (default: .)"
+    )
+    p_trust.add_argument(
+        "--target",
+        choices=TARGETS,
+        default="claude",
+        help="Target agent (default: claude)",
+    )
 
     p_watch = sub.add_parser("watch", help="Start tmux daemon (WSL only)")
     p_watch.add_argument("session", nargs="?", help="tmux session name")
@@ -2315,55 +2632,138 @@ def main():
     sub.add_parser("init", help="Create .agentnanny.toml in current directory")
     sub.add_parser("status", help="Show hook + daemon status")
     p_log = sub.add_parser("log", help="Tail audit log")
-    p_log.add_argument("--lines", "-n", type=int, default=50, help="Number of lines to show (default: 50)")
-    p_log.add_argument("--format", "-f", dest="log_format", choices=["raw", "json", "table"], default="raw", help="Output format (default: raw)")
+    p_log.add_argument(
+        "--lines",
+        "-n",
+        type=int,
+        default=50,
+        help="Number of lines to show (default: 50)",
+    )
+    p_log.add_argument(
+        "--format",
+        "-f",
+        dest="log_format",
+        choices=["raw", "json", "table"],
+        default="raw",
+        help="Output format (default: raw)",
+    )
     p_log.add_argument("--tool", default=None, help="Filter by tool name")
     p_log.add_argument("--action", default=None, help="Filter by action")
 
-    p_activate = sub.add_parser("activate", help="Create a session policy (prints export command)")
-    p_activate.add_argument("profile", nargs="?", default=None, help="Profile name (e.g. safe-dev)")
-    p_activate.add_argument("--groups", "-g", default=None, help="Comma-separated group names")
-    p_activate.add_argument("--tools", "-t", default=None, help="Comma-separated tool names")
-    p_activate.add_argument("--deny", "-d", default=None, help="Comma-separated deny patterns")
+    p_activate = sub.add_parser(
+        "activate", help="Create a session policy (prints export command)"
+    )
+    p_activate.add_argument(
+        "profile", nargs="?", default=None, help="Profile name (e.g. safe-dev)"
+    )
+    p_activate.add_argument(
+        "--groups", "-g", default=None, help="Comma-separated group names"
+    )
+    p_activate.add_argument(
+        "--tools", "-t", default=None, help="Comma-separated tool names"
+    )
+    p_activate.add_argument(
+        "--deny", "-d", default=None, help="Comma-separated deny patterns"
+    )
     p_activate.add_argument("--ttl", default=None, help="TTL (e.g. 8h, 30m, 3600)")
-    p_activate.add_argument("--target", choices=TARGETS, default="claude",
-                            help="Target agent (default: claude)")
+    p_activate.add_argument(
+        "--target",
+        choices=TARGETS,
+        default="claude",
+        help="Target agent (default: claude)",
+    )
 
     p_deactivate = sub.add_parser("deactivate", help="Remove a session policy")
-    p_deactivate.add_argument("scope_id", nargs="?", default=None, help="Scope ID (default: from AGENTNANNY_SCOPE)")
-    p_deactivate.add_argument("--target", choices=TARGETS, default="claude",
-                              help="Target agent (default: claude)")
+    p_deactivate.add_argument(
+        "scope_id",
+        nargs="?",
+        default=None,
+        help="Scope ID (default: from AGENTNANNY_SCOPE)",
+    )
+    p_deactivate.add_argument(
+        "--target",
+        choices=TARGETS,
+        default="claude",
+        help="Target agent (default: claude)",
+    )
 
-    p_extend = sub.add_parser("extend", help="Add groups, tools, or deny patterns to an existing session")
-    p_extend.add_argument("scope_id", nargs="?", default=None, help="Scope ID (default: from AGENTNANNY_SCOPE)")
-    p_extend.add_argument("--groups", "-g", default=None, help="Comma-separated group names to add")
-    p_extend.add_argument("--tools", "-t", default=None, help="Comma-separated tool names to add")
-    p_extend.add_argument("--deny", "-d", default=None, help="Comma-separated deny patterns to add")
+    p_extend = sub.add_parser(
+        "extend", help="Add groups, tools, or deny patterns to an existing session"
+    )
+    p_extend.add_argument(
+        "scope_id",
+        nargs="?",
+        default=None,
+        help="Scope ID (default: from AGENTNANNY_SCOPE)",
+    )
+    p_extend.add_argument(
+        "--groups", "-g", default=None, help="Comma-separated group names to add"
+    )
+    p_extend.add_argument(
+        "--tools", "-t", default=None, help="Comma-separated tool names to add"
+    )
+    p_extend.add_argument(
+        "--deny", "-d", default=None, help="Comma-separated deny patterns to add"
+    )
 
     p_run = sub.add_parser("run", help="Run command with session-scoped permissions")
-    p_run.add_argument("profile", nargs="?", default=None, help="Profile name (e.g. safe-dev)")
-    p_run.add_argument("--groups", "-g", default=None, help="Comma-separated group names")
+    p_run.add_argument(
+        "profile", nargs="?", default=None, help="Profile name (e.g. safe-dev)"
+    )
+    p_run.add_argument(
+        "--groups", "-g", default=None, help="Comma-separated group names"
+    )
     p_run.add_argument("--tools", "-t", default=None, help="Comma-separated tool names")
-    p_run.add_argument("--deny", "-d", default=None, help="Comma-separated deny patterns")
+    p_run.add_argument(
+        "--deny", "-d", default=None, help="Comma-separated deny patterns"
+    )
     p_run.add_argument("--ttl", default=None, help="TTL (e.g. 8h, 30m, 3600)")
-    p_run.add_argument("--target", choices=TARGETS, default="claude",
-                        help="Target agent (default: claude)")
-    p_run.add_argument("--completion", default=None,
-                       help="Comma-separated regex criteria for Codex completion")
-    p_run.add_argument("command_args", nargs=argparse.REMAINDER, help="Command to run (after --)")
+    p_run.add_argument(
+        "--target",
+        choices=TARGETS,
+        default="claude",
+        help="Target agent (default: claude)",
+    )
+    p_run.add_argument(
+        "--completion",
+        default=None,
+        help="Comma-separated regex criteria for Codex completion",
+    )
+    p_run.add_argument(
+        "command_args", nargs=argparse.REMAINDER, help="Command to run (after --)"
+    )
 
     sub.add_parser("profiles", help="List available profiles")
     sub.add_parser("sessions", help="List active session policies")
-    sub.add_parser("prune", help="Remove expired session files")
+    p_prune = sub.add_parser("prune", help="Remove expired session files")
+    p_prune.add_argument(
+        "--target",
+        choices=TARGETS,
+        default="claude",
+        help="Target agent artifacts to prune (default: claude)",
+    )
     sub.add_parser("list-groups", help="List all configured groups")
 
     p_explain = sub.add_parser("explain", help="Inspect a session policy in detail")
-    p_explain.add_argument("scope_id", nargs="?", default=None, help="Scope ID (default: from AGENTNANNY_SCOPE)")
+    p_explain.add_argument(
+        "scope_id",
+        nargs="?",
+        default=None,
+        help="Scope ID (default: from AGENTNANNY_SCOPE)",
+    )
 
     p_test = sub.add_parser("test-policy", help="Dry-run policy evaluation")
     p_test.add_argument("tool_name", help="Tool name to evaluate (e.g. Bash, Write)")
-    p_test.add_argument("--input", "-i", default="{}", dest="tool_input", help="JSON string for tool_input (default: {})")
-    p_test.add_argument("--scope", "-s", default=None, help="Scope ID (default: from AGENTNANNY_SCOPE)")
+    p_test.add_argument(
+        "--input",
+        "-i",
+        default="{}",
+        dest="tool_input",
+        help="JSON string for tool_input (default: {})",
+    )
+    p_test.add_argument(
+        "--scope", "-s", default=None, help="Scope ID (default: from AGENTNANNY_SCOPE)"
+    )
 
     args = parser.parse_args()
 
@@ -2401,7 +2801,9 @@ def main():
             filter_action=args.action,
         )
     elif args.command == "activate":
-        cmd_activate(args.profile, args.groups, args.tools, args.deny, args.ttl, args.target)
+        cmd_activate(
+            args.profile, args.groups, args.tools, args.deny, args.ttl, args.target
+        )
     elif args.command == "deactivate":
         cmd_deactivate(args.scope_id, args.target)
     elif args.command == "extend":
@@ -2422,7 +2824,7 @@ def main():
     elif args.command == "sessions":
         cmd_sessions()
     elif args.command == "prune":
-        cmd_prune()
+        cmd_prune(args.target)
     elif args.command == "list-groups":
         cmd_list_groups()
     elif args.command == "explain":
