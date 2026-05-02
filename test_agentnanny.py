@@ -7,7 +7,6 @@ import os
 import re
 import subprocess
 import sys
-import textwrap
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
@@ -37,27 +36,27 @@ class TestParseToml:
         assert result["daemon"]["session"] == "claude"
 
     def test_bool_values(self):
-        text = '[daemon]\ndry_run = false'
+        text = "[daemon]\ndry_run = false"
         result = agentnanny.parse_toml(text)
         assert result["daemon"]["dry_run"] is False
 
     def test_float_value(self):
-        text = '[daemon]\npoll_interval = 0.3'
+        text = "[daemon]\npoll_interval = 0.3"
         result = agentnanny.parse_toml(text)
         assert result["daemon"]["poll_interval"] == 0.3
 
     def test_int_value(self):
-        text = '[daemon]\nretries = 3'
+        text = "[daemon]\nretries = 3"
         result = agentnanny.parse_toml(text)
         assert result["daemon"]["retries"] == 3
 
     def test_empty_array(self):
-        text = '[hooks]\ndeny = []'
+        text = "[hooks]\ndeny = []"
         result = agentnanny.parse_toml(text)
         assert result["hooks"]["deny"] == []
 
     def test_comments_ignored(self):
-        text = '# comment\n[hooks]\n# another comment\ndeny = []'
+        text = "# comment\n[hooks]\n# another comment\ndeny = []"
         result = agentnanny.parse_toml(text)
         assert result["hooks"]["deny"] == []
 
@@ -82,24 +81,30 @@ class TestMatchesDeny:
         assert agentnanny.matches_deny("Read", {}, ["Bash"]) is False
 
     def test_tool_with_input_pattern(self):
-        assert agentnanny.matches_deny(
-            "Bash", {"command": "rm -rf /"}, ["Bash(rm*)"]
-        ) is True
+        assert (
+            agentnanny.matches_deny("Bash", {"command": "rm -rf /"}, ["Bash(rm*)"])
+            is True
+        )
 
     def test_tool_with_input_pattern_no_match(self):
-        assert agentnanny.matches_deny(
-            "Bash", {"command": "ls -la"}, ["Bash(rm*)"]
-        ) is False
+        assert (
+            agentnanny.matches_deny("Bash", {"command": "ls -la"}, ["Bash(rm*)"])
+            is False
+        )
 
     def test_tool_input_exact_prefix(self):
-        assert agentnanny.matches_deny(
-            "Bash", {"command": "rm -rf /tmp"}, ["Bash(rm -rf*)"]
-        ) is True
+        assert (
+            agentnanny.matches_deny(
+                "Bash", {"command": "rm -rf /tmp"}, ["Bash(rm -rf*)"]
+            )
+            is True
+        )
 
     def test_tool_input_no_match_different_tool(self):
-        assert agentnanny.matches_deny(
-            "Read", {"file_path": "/etc/passwd"}, ["Bash(rm*)"]
-        ) is False
+        assert (
+            agentnanny.matches_deny("Read", {"file_path": "/etc/passwd"}, ["Bash(rm*)"])
+            is False
+        )
 
     def test_regex_pattern(self):
         assert agentnanny.matches_deny("WebFetch", {}, [".*Fetch.*"]) is True
@@ -113,19 +118,30 @@ class TestMatchesDeny:
     def test_multiple_patterns(self):
         deny = ["Bash(rm*)", "Bash(dd*)", "WebFetch"]
         assert agentnanny.matches_deny("Bash", {"command": "rm /tmp/x"}, deny) is True
-        assert agentnanny.matches_deny("Bash", {"command": "dd if=/dev/zero"}, deny) is True
+        assert (
+            agentnanny.matches_deny("Bash", {"command": "dd if=/dev/zero"}, deny)
+            is True
+        )
         assert agentnanny.matches_deny("WebFetch", {"url": "http://x"}, deny) is True
         assert agentnanny.matches_deny("Bash", {"command": "ls"}, deny) is False
 
     def test_write_file_path_pattern(self):
-        assert agentnanny.matches_deny(
-            "Write", {"file_path": "/etc/passwd"}, ["Write(/etc/*)"]
-        ) is True
+        assert (
+            agentnanny.matches_deny(
+                "Write", {"file_path": "/etc/passwd"}, ["Write(/etc/*)"]
+            )
+            is True
+        )
 
     def test_webfetch_url_pattern(self):
-        assert agentnanny.matches_deny(
-            "WebFetch", {"url": "https://evil.com/payload"}, ["WebFetch(*evil.com*)"]
-        ) is True
+        assert (
+            agentnanny.matches_deny(
+                "WebFetch",
+                {"url": "https://evil.com/payload"},
+                ["WebFetch(*evil.com*)"],
+            )
+            is True
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -160,8 +176,9 @@ class TestPrimaryInput:
 
 
 class TestHandleHook:
-    def _run_hook(self, event: dict, deny: list[str] | None = None,
-                  allow: list[str] | None = None) -> dict | None:
+    def _run_hook(
+        self, event: dict, deny: list[str] | None = None, allow: list[str] | None = None
+    ) -> dict | None:
         """Run handle_hook with mocked stdin/stdout/config.
 
         Returns parsed JSON decision, or None for passthrough (empty output).
@@ -176,10 +193,12 @@ class TestHandleHook:
         stdout = StringIO()
 
         env_clean = {k: v for k, v in os.environ.items() if k != "AGENTNANNY_SCOPE"}
-        with patch.object(sys, "stdin", stdin), \
-             patch.object(sys, "stdout", stdout), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.dict(os.environ, env_clean, clear=True):
+        with (
+            patch.object(sys, "stdin", stdin),
+            patch.object(sys, "stdout", stdout),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.dict(os.environ, env_clean, clear=True),
+        ):
             agentnanny.handle_hook()
 
         raw = stdout.getvalue()
@@ -189,18 +208,22 @@ class TestHandleHook:
 
     def test_passthrough_no_scope_no_allow(self):
         """Without scope or allow list, hook passes through (no output)."""
-        result = self._run_hook({
-            "tool_name": "Bash",
-            "tool_input": {"command": "ls -la"},
-        })
+        result = self._run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls -la"},
+            }
+        )
         assert result is None
 
     def test_passthrough_read_no_scope(self):
         """Read tool also passes through when no scope is active."""
-        result = self._run_hook({
-            "tool_name": "Read",
-            "tool_input": {"file_path": "/tmp/test.py"},
-        })
+        result = self._run_hook(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": "/tmp/test.py"},
+            }
+        )
         assert result is None
 
     def test_deny_by_tool_name(self):
@@ -344,9 +367,7 @@ class TestDetectPrompt:
 
     def test_bash_3opt(self):
         screen = self._make_screen(
-            "Bash command\n"
-            "    cat ~/.claude.json\n"
-            "    Check existing .claude.json",
+            "Bash command\n    cat ~/.claude.json\n    Check existing .claude.json",
             "Do you want to proceed?\n"
             "❯ 1. Yes\n"
             "  2. Yes, allow reading from User\\\\ from this project\n"
@@ -407,7 +428,7 @@ class TestDetectPrompt:
         """From screenshot: backslash before shell operator warning."""
         screen = self._make_screen(
             "Bash command\n"
-            "    find /home -name \"checkpoint.json\" -exec sh -c 'echo \"---\"' \\;\n"
+            '    find /home -name "checkpoint.json" -exec sh -c \'echo "---"\' \\;\n'
             "    Summarize all checkpoint statuses\n"
             "\n"
             "Command contains a backslash before a shell operator (;, |, &, <, >) "
@@ -424,7 +445,7 @@ class TestDetectPrompt:
         """From screenshot: $() command substitution warning."""
         screen = self._make_screen(
             "Bash command\n"
-            "    for repo in /home/user/repos/*/; do bytes=$(git -C \"$repo\" diff | wc -c); done\n"
+            '    for repo in /home/user/repos/*/; do bytes=$(git -C "$repo" diff | wc -c); done\n'
             "    Check which repos have diffs and sizes\n"
             "\n"
             "Command contains $() command substitution",
@@ -440,7 +461,7 @@ class TestDetectPrompt:
         """From screenshot: quoted characters in flag names warning."""
         screen = self._make_screen(
             "Bash command\n"
-            "    ls -la /home/user/results/; echo \"---\"; for repo in /repos/*/; do done\n"
+            '    ls -la /home/user/results/; echo "---"; for repo in /repos/*/; do done\n'
             "    Check run dir contents and repo diffs\n"
             "\n"
             "Command contains quoted characters in flag names",
@@ -473,7 +494,7 @@ class TestDetectPrompt:
         screen = self._make_screen(
             "Bash command\n"
             "    for info in with_feature/20260303_131030:starter_tasks ...; do\n"
-            "    python3 -c \"import json; ...\" 2>/dev/null\n"
+            '    python3 -c "import json; ..." 2>/dev/null\n'
             "    Check earlier complete runs",
             "Command contains variables in dangerous contexts (redirections or pipes)\n"
             "\n"
@@ -491,9 +512,9 @@ class TestDetectPrompt:
             "Bash command\n"
             "    # Check the 213* set (most recent 6 invocations)\n"
             "    for d in 20260303_213418 20260303_213419 ...; do\n"
-            "      found=\"\"\n"
+            '      found=""\n'
             "      for arm in wo_feature with_feature; do\n"
-            "        p=\"/home/user/projects/example/results/$arm/$d\"\n"
+            '        p="/home/user/projects/example/results/$arm/$d"\n'
             "      done\n"
             "    done\n"
             "    Check latest 6 invocations (213* set)",
@@ -512,8 +533,8 @@ class TestDetectPrompt:
         screen = self._make_screen(
             "Bash command\n"
             "    for d in /home/user/projects/example/results/*/2026*/; do "
-            "if [ -f \"$d/config.json\" ]; then echo \"=== $d ===\"; "
-            "cat \"$d/config.json\" 2>/dev/null; echo; fi; done\n"
+            'if [ -f "$d/config.json" ]; then echo "=== $d ==="; '
+            'cat "$d/config.json" 2>/dev/null; echo; fi; done\n'
             "    Show config.json for all runs",
             "Command contains ambiguous syntax with command separators "
             "that could be misinterpreted\n"
@@ -550,10 +571,10 @@ class TestDetectPrompt:
         """From screenshot: 'don't ask again for: python3:*' option."""
         screen = self._make_screen(
             "Bash command\n"
-            "    echo \"=== with_feature benchmark (214009) ===\" && python3 -c \"\n"
+            '    echo "=== with_feature benchmark (214009) ===" && python3 -c "\n'
             "    import json\n"
             "    cp = json.load(open('results/with_feature/20260303_214009/checkpoint.json'))\n"
-            "    for k,v in cp.items(): print(f'{k}: {v.get(\"status\",\"?\")}')\"\n"
+            '    for k,v in cp.items(): print(f\'{k}: {v.get("status","?")}\')"\n'
             "    Check checkpoint status for main 10-task runs",
             "Do you want to proceed?\n"
             "❯ 1. Yes\n"
@@ -624,7 +645,7 @@ class TestDetectPrompt:
         screen = self._make_screen(
             "Bash command\n"
             "\n"
-            "    wmic process where \"ProcessId=27340 or ProcessId=19152\" "
+            '    wmic process where "ProcessId=27340 or ProcessId=19152" '
             "get ProcessId,CommandLine /format:list 2>/dev/null | head -20\n"
             "    Identify which python process is the embedder",
             "Do you want to proceed?\n"
@@ -749,10 +770,15 @@ class TestInstallUninstall:
 
     def test_install_preserves_existing_settings(self, tmp_path):
         settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps({
-            "permissions": {"allow": ["Bash"]},
-            "other_setting": True,
-        }), encoding="utf-8")
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "permissions": {"allow": ["Bash"]},
+                    "other_setting": True,
+                }
+            ),
+            encoding="utf-8",
+        )
 
         with patch.object(agentnanny, "SETTINGS_PATH", settings_file):
             agentnanny.install_hooks()
@@ -815,16 +841,23 @@ class TestInstallUninstall:
 
     def test_uninstall_preserves_other_hooks(self, tmp_path):
         settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps({
-            "hooks": {
-                "PermissionRequest": [
-                    {
-                        "matcher": "",
-                        "hooks": [{"type": "command", "command": "other-tool hook"}],
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PermissionRequest": [
+                            {
+                                "matcher": "",
+                                "hooks": [
+                                    {"type": "command", "command": "other-tool hook"}
+                                ],
+                            },
+                        ],
                     },
-                ],
-            },
-        }), encoding="utf-8")
+                }
+            ),
+            encoding="utf-8",
+        )
 
         with patch.object(agentnanny, "SETTINGS_PATH", settings_file):
             agentnanny.install_hooks()
@@ -868,23 +901,33 @@ class TestTrustDirectory:
         assert settings["projects"][proj_key]["hasTrustDialogAccepted"] is True
 
     def test_trust_codex_new_directory(self, tmp_path):
-        trust_file = tmp_path / "trust.json"
+        codex_home = tmp_path / ".codex"
+        config_path = codex_home / "config.toml"
 
-        with patch.object(agentnanny, "CODEX_TRUST_PATH", trust_file):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny.trust_directory(str(tmp_path / "myproject"), target="codex")
 
-        settings = json.loads(trust_file.read_text(encoding="utf-8"))
         expected = str((tmp_path / "myproject").resolve())
-        assert settings == {"trusted_directories": [expected]}
+        content = config_path.read_text(encoding="utf-8")
+        assert f'[projects."{expected}"]' in content
+        assert 'trust_level = "trusted"' in content
 
     def test_trust_preserves_existing(self, tmp_path):
         claude_json = tmp_path / ".claude.json"
-        claude_json.write_text(json.dumps({
-            "numStartups": 5,
-            "projects": {
-                "/existing": {"hasTrustDialogAccepted": True},
-            },
-        }), encoding="utf-8")
+        claude_json.write_text(
+            json.dumps(
+                {
+                    "numStartups": 5,
+                    "projects": {
+                        "/existing": {"hasTrustDialogAccepted": True},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
 
         with patch.object(agentnanny, "CLAUDE_JSON_PATH", claude_json):
             agentnanny.trust_directory(str(tmp_path / "newproject"))
@@ -894,16 +937,23 @@ class TestTrustDirectory:
         assert settings["projects"]["/existing"]["hasTrustDialogAccepted"] is True
 
     def test_trust_codex_preserves_existing(self, tmp_path):
-        trust_file = tmp_path / "trust.json"
-        trust_file.write_text(json.dumps({
-            "trusted_directories": ["/existing"],
-        }), encoding="utf-8")
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            '[projects."/existing"]\ntrust_level = "trusted"\n',
+            encoding="utf-8",
+        )
 
-        with patch.object(agentnanny, "CODEX_TRUST_PATH", trust_file):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny.trust_directory(str(tmp_path / "newproject"), target="codex")
 
-        settings = json.loads(trust_file.read_text(encoding="utf-8"))
-        assert settings["trusted_directories"] == ["/existing", str((tmp_path / "newproject").resolve())]
+        content = config_path.read_text(encoding="utf-8")
+        assert '[projects."/existing"]' in content
+        assert f'[projects."{str((tmp_path / "newproject").resolve())}"]' in content
 
     def test_trust_creates_file(self, tmp_path):
         claude_json = tmp_path / ".claude.json"
@@ -914,9 +964,8 @@ class TestTrustDirectory:
         assert claude_json.exists()
 
     def test_trust_invalid_target(self, tmp_path):
-        with patch.object(agentnanny, "CODEX_TRUST_PATH", tmp_path / "trust.json"):
-            with pytest.raises(ValueError, match="Unsupported trust target"):
-                agentnanny.trust_directory(str(tmp_path), target="unknown")
+        with pytest.raises(ValueError, match="Unsupported trust target"):
+            agentnanny.trust_directory(str(tmp_path), target="unknown")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -967,7 +1016,10 @@ class TestAuditLog:
 class TestLoadConfig:
     def test_load_from_file(self, tmp_path):
         config_file = tmp_path / "config.toml"
-        config_file.write_text('[hooks]\ndeny = ["Bash(rm*)"]\n[daemon]\nsession = "test"', encoding="utf-8")
+        config_file.write_text(
+            '[hooks]\ndeny = ["Bash(rm*)"]\n[daemon]\nsession = "test"',
+            encoding="utf-8",
+        )
 
         with patch.object(agentnanny, "CONFIG_PATH", config_file):
             cfg = agentnanny.load_config()
@@ -979,8 +1031,10 @@ class TestLoadConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text('[daemon]\nsession = "default"', encoding="utf-8")
 
-        with patch.object(agentnanny, "CONFIG_PATH", config_file), \
-             patch.dict(os.environ, {"AGENTNANNY_SESSION": "override"}):
+        with (
+            patch.object(agentnanny, "CONFIG_PATH", config_file),
+            patch.dict(os.environ, {"AGENTNANNY_SESSION": "override"}),
+        ):
             cfg = agentnanny.load_config()
 
         assert cfg["daemon"]["session"] == "override"
@@ -989,8 +1043,10 @@ class TestLoadConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[hooks]\ndeny = []", encoding="utf-8")
 
-        with patch.object(agentnanny, "CONFIG_PATH", config_file), \
-             patch.dict(os.environ, {"AGENTNANNY_DENY": "Bash(rm*),WebFetch"}):
+        with (
+            patch.object(agentnanny, "CONFIG_PATH", config_file),
+            patch.dict(os.environ, {"AGENTNANNY_DENY": "Bash(rm*),WebFetch"}),
+        ):
             cfg = agentnanny.load_config()
 
         assert cfg["hooks"]["deny"] == ["Bash(rm*)", "WebFetch"]
@@ -1023,10 +1079,12 @@ class TestCLI:
         stdout = StringIO()
         cfg = {"hooks": {}, "logging": {"audit_log": os.devnull, "level": "all"}}
 
-        with patch("sys.argv", ["agentnanny", "hook"]), \
-             patch.object(sys, "stdin", stdin), \
-             patch.object(sys, "stdout", stdout), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch("sys.argv", ["agentnanny", "hook"]),
+            patch.object(sys, "stdin", stdin),
+            patch.object(sys, "stdout", stdout),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             agentnanny.main()
 
         assert stdout.getvalue() == ""
@@ -1036,12 +1094,14 @@ class TestCLI:
         settings_file.write_text("{}", encoding="utf-8")
         pid_file = tmp_path / "agentnanny.pid"
 
-        with patch("sys.argv", ["agentnanny", "status"]), \
-             patch.object(agentnanny, "SETTINGS_PATH", settings_file), \
-             patch.object(agentnanny, "PID_FILE", pid_file), \
-             patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"), \
-             patch.object(agentnanny, "load_config", return_value={"hooks": {}}), \
-             patch.dict(os.environ, {}, clear=False):
+        with (
+            patch("sys.argv", ["agentnanny", "status"]),
+            patch.object(agentnanny, "SETTINGS_PATH", settings_file),
+            patch.object(agentnanny, "PID_FILE", pid_file),
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.object(agentnanny, "load_config", return_value={"hooks": {}}),
+            patch.dict(os.environ, {}, clear=False),
+        ):
             os.environ.pop("AGENTNANNY_SCOPE", None)
             agentnanny.main()
 
@@ -1078,7 +1138,9 @@ class TestSessionPolicy:
 
     def test_expired_policy_returns_none(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
-            created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(timespec="seconds")
+            created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(
+                timespec="seconds"
+            )
             policy = {
                 "scope_id": "e00e0001",
                 "created": created,
@@ -1094,7 +1156,9 @@ class TestSessionPolicy:
 
     def test_no_ttl_never_expires(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
-            created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(timespec="seconds")
+            created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(
+                timespec="seconds"
+            )
             policy = {
                 "scope_id": "f00e0e01",
                 "created": created,
@@ -1123,14 +1187,18 @@ class TestSessionPolicy:
     def test_list_policies(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             for i in range(3):
-                agentnanny.save_session_policy({
-                    "scope_id": f"a0a0{i:04d}",
-                    "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    "ttl_seconds": 0,
-                    "allow_groups": [],
-                    "allow_tools": [],
-                    "deny": [],
-                })
+                agentnanny.save_session_policy(
+                    {
+                        "scope_id": f"a0a0{i:04d}",
+                        "created": datetime.now(timezone.utc).isoformat(
+                            timespec="seconds"
+                        ),
+                        "ttl_seconds": 0,
+                        "allow_groups": [],
+                        "allow_tools": [],
+                        "deny": [],
+                    }
+                )
             policies = agentnanny.list_session_policies()
             assert len(policies) == 3
 
@@ -1157,7 +1225,9 @@ class TestScopeIdValidation:
     def test_load_rejects_invalid_scope(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
             # Write a file that would match a traversal path
-            (tmp_path / "../evil.json").resolve().parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / "../evil.json").resolve().parent.mkdir(
+                parents=True, exist_ok=True
+            )
             assert agentnanny.load_session_policy("../evil") is None
 
     def test_delete_rejects_invalid_scope(self, tmp_path):
@@ -1174,7 +1244,9 @@ class TestScopeIdValidation:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not supported on Windows")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix file permissions not supported on Windows"
+)
 class TestFilePermissions:
     def test_session_file_is_owner_only(self, tmp_path):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
@@ -1267,14 +1339,16 @@ class TestMatchesAllow:
         assert agentnanny.matches_allow("WebFetch", {}, ["Bash"]) is False
 
     def test_tool_with_input_pattern(self):
-        assert agentnanny.matches_allow(
-            "Bash", {"command": "ls -la"}, ["Bash(ls*)"]
-        ) is True
+        assert (
+            agentnanny.matches_allow("Bash", {"command": "ls -la"}, ["Bash(ls*)"])
+            is True
+        )
 
     def test_tool_with_input_pattern_no_match(self):
-        assert agentnanny.matches_allow(
-            "Bash", {"command": "rm -rf /"}, ["Bash(ls*)"]
-        ) is False
+        assert (
+            agentnanny.matches_allow("Bash", {"command": "rm -rf /"}, ["Bash(ls*)"])
+            is False
+        )
 
     def test_regex_pattern(self):
         assert agentnanny.matches_allow("WebFetch", {}, [".*Fetch.*"]) is True
@@ -1299,9 +1373,14 @@ class TestHandleHookScoped:
         }
     }
 
-    def _run_hook_scoped(self, event: dict, scope_id: str | None = None,
-                         policy: dict | None = None, cfg_extra: dict | None = None,
-                         global_deny: list[str] | None = None) -> str:
+    def _run_hook_scoped(
+        self,
+        event: dict,
+        scope_id: str | None = None,
+        policy: dict | None = None,
+        cfg_extra: dict | None = None,
+        global_deny: list[str] | None = None,
+    ) -> str:
         """Run handle_hook with optional session scope. Returns raw stdout."""
         cfg = {"hooks": {}, "logging": {"audit_log": os.devnull, "level": "all"}}
         cfg.update(self.GROUPS_CFG)
@@ -1317,14 +1396,18 @@ class TestHandleHookScoped:
         if scope_id:
             env_patch["AGENTNANNY_SCOPE"] = scope_id
 
-        with patch.object(sys, "stdin", stdin), \
-             patch.object(sys, "stdout", stdout), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.dict(os.environ, env_patch, clear=False):
+        with (
+            patch.object(sys, "stdin", stdin),
+            patch.object(sys, "stdout", stdout),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.dict(os.environ, env_patch, clear=False),
+        ):
             if not scope_id:
                 os.environ.pop("AGENTNANNY_SCOPE", None)
             if policy:
-                with patch.object(agentnanny, "load_session_policy", return_value=policy):
+                with patch.object(
+                    agentnanny, "load_session_policy", return_value=policy
+                ):
                     agentnanny.handle_hook()
             else:
                 agentnanny.handle_hook()
@@ -1333,10 +1416,12 @@ class TestHandleHookScoped:
 
     def test_no_scope_passthrough(self):
         """Without AGENTNANNY_SCOPE and no allow list, hook passes through."""
-        raw = self._run_hook_scoped({
-            "tool_name": "Bash",
-            "tool_input": {"command": "ls"},
-        })
+        raw = self._run_hook_scoped(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+            }
+        )
         assert raw == ""
 
     def test_scope_valid_policy_allows(self):
@@ -1431,15 +1516,19 @@ class TestHandleHookScoped:
     def test_scope_expired_policy_passthrough(self, tmp_path):
         """Expired policy → passthrough."""
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
-            created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(timespec="seconds")
-            agentnanny.save_session_policy({
-                "scope_id": "e00e0001",
-                "created": created,
-                "ttl_seconds": 1,
-                "allow_groups": ["shell"],
-                "allow_tools": [],
-                "deny": [],
-            })
+            created = datetime(2020, 1, 1, tzinfo=timezone.utc).isoformat(
+                timespec="seconds"
+            )
+            agentnanny.save_session_policy(
+                {
+                    "scope_id": "e00e0001",
+                    "created": created,
+                    "ttl_seconds": 1,
+                    "allow_groups": ["shell"],
+                    "allow_tools": [],
+                    "deny": [],
+                }
+            )
             raw = self._run_hook_scoped(
                 {"tool_name": "Bash", "tool_input": {"command": "ls"}},
                 scope_id="e00e0001",
@@ -1459,8 +1548,10 @@ class TestActivateDeactivate:
             "groups": {"filesystem": ["Read", "Write", "Edit", "Glob", "Grep"]},
             "logging": {"audit_log": os.devnull},
         }
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             agentnanny.cmd_activate(None, "filesystem", None, None, "0")
 
         out = capsys.readouterr().out
@@ -1470,8 +1561,10 @@ class TestActivateDeactivate:
 
     def test_activate_with_ttl(self, tmp_path, capsys):
         cfg = {"hooks": {}, "groups": {}, "logging": {"audit_log": os.devnull}}
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             agentnanny.cmd_activate(None, None, "Bash", None, "8h")
 
         out = capsys.readouterr().out
@@ -1481,21 +1574,25 @@ class TestActivateDeactivate:
 
     def test_activate_unknown_group_raises(self, tmp_path):
         cfg = {"hooks": {}, "groups": {}, "logging": {"audit_log": os.devnull}}
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             with pytest.raises(ValueError, match="Unknown group"):
                 agentnanny.cmd_activate(None, "nonexistent", None, None, "0")
 
     def test_deactivate_removes_policy(self, tmp_path, capsys):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
-            agentnanny.save_session_policy({
-                "scope_id": "dea01234",
-                "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "ttl_seconds": 0,
-                "allow_groups": [],
-                "allow_tools": [],
-                "deny": [],
-            })
+            agentnanny.save_session_policy(
+                {
+                    "scope_id": "dea01234",
+                    "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "ttl_seconds": 0,
+                    "allow_groups": [],
+                    "allow_tools": [],
+                    "deny": [],
+                }
+            )
             agentnanny.cmd_deactivate("dea01234")
 
         assert not (tmp_path / "deact123.json").exists()
@@ -1503,16 +1600,20 @@ class TestActivateDeactivate:
         assert "unset AGENTNANNY_SCOPE" in out
 
     def test_deactivate_from_env(self, tmp_path, capsys):
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.dict(os.environ, {"AGENTNANNY_SCOPE": "f00e0001"}):
-            agentnanny.save_session_policy({
-                "scope_id": "f00e0001",
-                "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "ttl_seconds": 0,
-                "allow_groups": [],
-                "allow_tools": [],
-                "deny": [],
-            })
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.dict(os.environ, {"AGENTNANNY_SCOPE": "f00e0001"}),
+        ):
+            agentnanny.save_session_policy(
+                {
+                    "scope_id": "f00e0001",
+                    "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "ttl_seconds": 0,
+                    "allow_groups": [],
+                    "allow_tools": [],
+                    "deny": [],
+                }
+            )
             agentnanny.cmd_deactivate(None)
 
         assert not (tmp_path / "fromenv1.json").exists()
@@ -1558,8 +1659,10 @@ class TestExtend:
             "logging": {"audit_log": os.devnull},
         }
         scope_id = "a1b2c3d4"
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             self._create_session(tmp_path, scope_id, groups=["filesystem"])
             agentnanny.cmd_extend(scope_id, "network", None, None)
 
@@ -1570,8 +1673,10 @@ class TestExtend:
     def test_extend_adds_tools(self, tmp_path):
         cfg = {"hooks": {}, "groups": {}, "logging": {"audit_log": os.devnull}}
         scope_id = "b2c3d4e5"
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             self._create_session(tmp_path, scope_id, tools=["Read"])
             agentnanny.cmd_extend(scope_id, None, "Write,Edit", None)
 
@@ -1581,8 +1686,10 @@ class TestExtend:
     def test_extend_adds_deny(self, tmp_path):
         cfg = {"hooks": {}, "groups": {}, "logging": {"audit_log": os.devnull}}
         scope_id = "c3d4e5f6"
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             self._create_session(tmp_path, scope_id, deny=["Bash(rm*)"])
             agentnanny.cmd_extend(scope_id, None, None, "Bash(sudo*)")
 
@@ -1597,9 +1704,13 @@ class TestExtend:
             "logging": {"audit_log": os.devnull},
         }
         scope_id = "d4e5f6a7"
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
-            self._create_session(tmp_path, scope_id, groups=["filesystem"], tools=["Bash"])
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
+            self._create_session(
+                tmp_path, scope_id, groups=["filesystem"], tools=["Bash"]
+            )
             agentnanny.cmd_extend(scope_id, "filesystem", "Bash", None)
 
         policy = json.loads((tmp_path / f"{scope_id}.json").read_text())
@@ -1608,8 +1719,10 @@ class TestExtend:
 
     def test_extend_nonexistent_session(self, tmp_path):
         cfg = {"hooks": {}, "groups": {}, "logging": {"audit_log": os.devnull}}
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             with pytest.raises(SystemExit):
                 agentnanny.cmd_extend("deadbeef", "filesystem", None, None)
 
@@ -1620,9 +1733,11 @@ class TestExtend:
             "logging": {"audit_log": os.devnull},
         }
         scope_id = "e5f6a7b8"
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.dict(os.environ, {"AGENTNANNY_SCOPE": scope_id}):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.dict(os.environ, {"AGENTNANNY_SCOPE": scope_id}),
+        ):
             self._create_session(tmp_path, scope_id)
             agentnanny.cmd_extend(None, "network", None, None)
 
@@ -1638,8 +1753,10 @@ class TestExtend:
     def test_extend_validates_groups(self, tmp_path):
         cfg = {"hooks": {}, "groups": {}, "logging": {"audit_log": os.devnull}}
         scope_id = "f6a7b8c9"
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             self._create_session(tmp_path, scope_id)
             with pytest.raises(ValueError, match="Unknown group"):
                 agentnanny.cmd_extend(scope_id, "nonexistent_group", None, None)
@@ -1697,12 +1814,17 @@ class TestRunWrapper:
         assert patterns[0].pattern == "done"
         assert patterns[1].pattern == "success\\s+message"
 
-    def test_run_codex_process_detects_startup_and_completion(self, tmp_path, monkeypatch):
-        fake_proc = self._FakeCodexProcess([
-            "Starting...\n",
-            "Do you trust this directory?\n",
-            "Task complete\n",
-        ], return_code=0)
+    def test_run_codex_process_detects_startup_and_completion(
+        self, tmp_path, monkeypatch
+    ):
+        fake_proc = self._FakeCodexProcess(
+            [
+                "Starting...\n",
+                "Do you trust this directory?\n",
+                "Task complete\n",
+            ],
+            return_code=0,
+        )
 
         def fake_popen(*_args, **_kwargs):
             return fake_proc
@@ -1710,9 +1832,18 @@ class TestRunWrapper:
         monkeypatch.setattr(agentnanny.subprocess, "Popen", fake_popen)
         monkeypatch.setattr(agentnanny, "_is_codex_trusted", lambda directory: False)
         added: list[str] = []
-        monkeypatch.setattr(agentnanny, "_add_codex_trusted_directory", lambda directory: added.append(directory))
+        monkeypatch.setattr(
+            agentnanny,
+            "_add_codex_trusted_directory",
+            lambda directory: added.append(directory),
+        )
 
-        result = agentnanny.run_codex_session(["codex"], os.environ.copy(), completion="Task complete", working_directory=str(tmp_path))
+        result = agentnanny.run_codex_session(
+            ["codex"],
+            os.environ.copy(),
+            completion="Task complete",
+            working_directory=str(tmp_path),
+        )
 
         assert result["return_code"] == 0
         assert result["startup_prompt_seen"] is True
@@ -1724,11 +1855,14 @@ class TestRunWrapper:
         assert added == [str(tmp_path)]
 
     def test_run_codex_process_completes_without_startup(self, tmp_path, monkeypatch):
-        fake_proc = self._FakeCodexProcess([
-            "Booting tools...\n",
-            "still working...\n",
-            "Task complete\n",
-        ], return_code=0)
+        fake_proc = self._FakeCodexProcess(
+            [
+                "Booting tools...\n",
+                "still working...\n",
+                "Task complete\n",
+            ],
+            return_code=0,
+        )
 
         def fake_popen(*_args, **_kwargs):
             return fake_proc
@@ -1758,7 +1892,9 @@ class TestRunWrapper:
 
         monkeypatch.setattr(agentnanny.subprocess, "Popen", fake_popen)
 
-        result = agentnanny.run_codex_session(["codex"], os.environ.copy(), completion=None)
+        result = agentnanny.run_codex_session(
+            ["codex"], os.environ.copy(), completion=None
+        )
 
         assert result["completion"]["matched"] is False
         assert result["completion"]["criteria_count"] == 0
@@ -1770,7 +1906,12 @@ class TestRunWrapper:
         fake_result = {
             "return_code": 7,
             "startup_prompt_seen": True,
-            "completion": {"matched": True, "pattern": "done", "criteria_count": 1, "criteria": ["done"]},
+            "completion": {
+                "matched": True,
+                "pattern": "done",
+                "criteria_count": 1,
+                "criteria": ["done"],
+            },
             "started_at": "2026-01-01T00:00:00+00:00",
             "ended_at": "2026-01-01T00:00:01+00:00",
             "output_length": 42,
@@ -1790,13 +1931,17 @@ class TestRunWrapper:
         def fake_remove(scope_id, prior_state=None):
             captured["removed"] = scope_id
 
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.object(agentnanny, "_apply_codex_session", fake_apply), \
-             patch.object(agentnanny, "_remove_codex_session", fake_remove), \
-             patch.object(agentnanny, "run_codex_session", fake_run_codex_session), \
-             pytest.raises(SystemExit) as exc_info:
-            agentnanny.cmd_run(None, None, None, None, None, ["--", "codex", "run"], "done", "codex")
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.object(agentnanny, "_apply_codex_session", fake_apply),
+            patch.object(agentnanny, "_remove_codex_session", fake_remove),
+            patch.object(agentnanny, "run_codex_session", fake_run_codex_session),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            agentnanny.cmd_run(
+                None, None, None, None, None, ["--", "codex", "run"], "done", "codex"
+            )
 
         assert exc_info.value.code == 7
         scope_id = captured["env"]["AGENTNANNY_SCOPE"]
@@ -1814,10 +1959,12 @@ class TestRunWrapper:
             captured_env.update(env or {})
             return subprocess.CompletedProcess(args, 0)
 
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch("subprocess.run", mock_run), \
-             pytest.raises(SystemExit) as exc_info:
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch("subprocess.run", mock_run),
+            pytest.raises(SystemExit) as exc_info,
+        ):
             agentnanny.cmd_run(None, None, "Bash", None, "0", ["--", "echo", "hello"])
 
         assert exc_info.value.code == 0
@@ -1848,14 +1995,16 @@ class TestSessions:
 
     def test_list_shows_policies(self, tmp_path, capsys):
         with patch.object(agentnanny, "SESSION_DIR", tmp_path):
-            agentnanny.save_session_policy({
-                "scope_id": "5e551234",
-                "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "ttl_seconds": 0,
-                "allow_groups": ["shell"],
-                "allow_tools": [],
-                "deny": [],
-            })
+            agentnanny.save_session_policy(
+                {
+                    "scope_id": "5e551234",
+                    "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "ttl_seconds": 0,
+                    "allow_groups": ["shell"],
+                    "allow_tools": [],
+                    "deny": [],
+                }
+            )
             agentnanny.cmd_sessions()
         out = capsys.readouterr().out
         assert "5e551234" in out
@@ -1914,8 +2063,16 @@ class TestTomlHyphens:
 
 class TestBuiltinConstants:
     def test_all_expected_groups_defined(self):
-        expected = {"read-only", "write", "filesystem", "shell", "safe-shell",
-                    "review-shell", "network", "all"}
+        expected = {
+            "read-only",
+            "write",
+            "filesystem",
+            "shell",
+            "safe-shell",
+            "review-shell",
+            "network",
+            "all",
+        }
         assert set(agentnanny.BUILTIN_GROUPS.keys()) == expected
 
     def test_all_expected_profiles_defined(self):
@@ -1976,19 +2133,24 @@ class TestDeepMerge:
 
 class TestConfigPaths:
     def test_user_config_path_windows(self):
-        with patch("sys.platform", "win32"), \
-             patch.dict(os.environ, {"APPDATA": "C:\\Users\\X\\AppData\\Roaming"}):
+        with (
+            patch("sys.platform", "win32"),
+            patch.dict(os.environ, {"APPDATA": "C:\\Users\\X\\AppData\\Roaming"}),
+        ):
             p = agentnanny._user_config_path()
             assert str(p).endswith("config.toml")
             assert "agentnanny" in str(p)
 
     def test_user_config_path_linux(self):
-        with patch("sys.platform", "linux"), \
-             patch.dict(os.environ, {"XDG_CONFIG_HOME": "/home/x/.config"}):
+        with (
+            patch("sys.platform", "linux"),
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": "/home/x/.config"}),
+        ):
             p = agentnanny._user_config_path()
             # Path separators vary by OS; check components
-            assert p.parts[-3:] == ("agentnanny", "config.toml")[-2:] or \
-                   str(p).replace("\\", "/").endswith(".config/agentnanny/config.toml")
+            assert p.parts[-3:] == ("agentnanny", "config.toml")[-2:] or str(p).replace(
+                "\\", "/"
+            ).endswith(".config/agentnanny/config.toml")
 
     def test_find_project_config_found(self, tmp_path):
         (tmp_path / ".agentnanny.toml").write_text("[hooks]\ndeny = []")
@@ -2011,9 +2173,13 @@ class TestConfigPaths:
 
 class TestLayeredConfig:
     def test_builtins_present_without_config(self, tmp_path):
-        with patch.object(agentnanny, "CONFIG_PATH", tmp_path / "no.toml"), \
-             patch.object(agentnanny, "_user_config_path", return_value=tmp_path / "no2.toml"), \
-             patch.object(agentnanny, "_find_project_config", return_value=None):
+        with (
+            patch.object(agentnanny, "CONFIG_PATH", tmp_path / "no.toml"),
+            patch.object(
+                agentnanny, "_user_config_path", return_value=tmp_path / "no2.toml"
+            ),
+            patch.object(agentnanny, "_find_project_config", return_value=None),
+        ):
             cfg = agentnanny.load_config()
         assert "safe-shell" in cfg["groups"]
         assert "safe-dev" in cfg["profiles"]
@@ -2022,9 +2188,13 @@ class TestLayeredConfig:
     def test_script_adjacent_overrides_builtin(self, tmp_path):
         script_cfg = tmp_path / "config.toml"
         script_cfg.write_text('[groups]\nfilesystem = ["Read"]')
-        with patch.object(agentnanny, "CONFIG_PATH", script_cfg), \
-             patch.object(agentnanny, "_user_config_path", return_value=tmp_path / "no.toml"), \
-             patch.object(agentnanny, "_find_project_config", return_value=None):
+        with (
+            patch.object(agentnanny, "CONFIG_PATH", script_cfg),
+            patch.object(
+                agentnanny, "_user_config_path", return_value=tmp_path / "no.toml"
+            ),
+            patch.object(agentnanny, "_find_project_config", return_value=None),
+        ):
             cfg = agentnanny.load_config()
         assert cfg["groups"]["filesystem"] == ["Read"]
         # Other builtin groups still present
@@ -2035,9 +2205,11 @@ class TestLayeredConfig:
         user_cfg.write_text('[hooks]\ndeny = ["Bash"]')
         proj_cfg = tmp_path / "proj.toml"
         proj_cfg.write_text('[hooks]\ndeny = ["WebFetch"]')
-        with patch.object(agentnanny, "CONFIG_PATH", tmp_path / "no.toml"), \
-             patch.object(agentnanny, "_user_config_path", return_value=user_cfg), \
-             patch.object(agentnanny, "_find_project_config", return_value=proj_cfg):
+        with (
+            patch.object(agentnanny, "CONFIG_PATH", tmp_path / "no.toml"),
+            patch.object(agentnanny, "_user_config_path", return_value=user_cfg),
+            patch.object(agentnanny, "_find_project_config", return_value=proj_cfg),
+        ):
             cfg = agentnanny.load_config()
         assert cfg["hooks"]["deny"] == ["WebFetch"]
 
@@ -2046,9 +2218,13 @@ class TestLayeredConfig:
         script_cfg.write_text(
             '[profiles.my-custom]\ngroups = ["shell"]\ndeny = []\nttl = "2h"'
         )
-        with patch.object(agentnanny, "CONFIG_PATH", script_cfg), \
-             patch.object(agentnanny, "_user_config_path", return_value=tmp_path / "no.toml"), \
-             patch.object(agentnanny, "_find_project_config", return_value=None):
+        with (
+            patch.object(agentnanny, "CONFIG_PATH", script_cfg),
+            patch.object(
+                agentnanny, "_user_config_path", return_value=tmp_path / "no.toml"
+            ),
+            patch.object(agentnanny, "_find_project_config", return_value=None),
+        ):
             cfg = agentnanny.load_config()
         assert "my-custom" in cfg["profiles"]
         assert cfg["profiles"]["my-custom"]["groups"] == ["shell"]
@@ -2106,8 +2282,10 @@ class TestProfileCLI:
         }
 
     def test_activate_with_profile(self, tmp_path, capsys):
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=self._cfg()):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=self._cfg()),
+        ):
             agentnanny.cmd_activate("safe-dev", None, None, None, None)
 
         out = capsys.readouterr().out
@@ -2118,8 +2296,10 @@ class TestProfileCLI:
         assert policy["ttl_seconds"] == 28800  # 8h
 
     def test_activate_profile_plus_extra_deny(self, tmp_path, capsys):
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=self._cfg()):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=self._cfg()),
+        ):
             agentnanny.cmd_activate("full-dev", None, None, "Bash(shutdown*)", None)
 
         out = capsys.readouterr().out
@@ -2129,8 +2309,10 @@ class TestProfileCLI:
         assert len(policy["deny"]) == 4  # 3 from full-dev + 1 extra
 
     def test_activate_profile_plus_extra_groups(self, tmp_path, capsys):
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=self._cfg()):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=self._cfg()),
+        ):
             agentnanny.cmd_activate("reviewer", "network", None, None, None)
 
         out = capsys.readouterr().out
@@ -2141,8 +2323,10 @@ class TestProfileCLI:
         assert "network" in policy["allow_groups"]
 
     def test_activate_profile_ttl_override(self, tmp_path, capsys):
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=self._cfg()):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=self._cfg()),
+        ):
             agentnanny.cmd_activate("safe-dev", None, None, None, "2h")
 
         out = capsys.readouterr().out
@@ -2157,11 +2341,15 @@ class TestProfileCLI:
             captured_env.update(env or {})
             return subprocess.CompletedProcess(args, 0)
 
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.object(agentnanny, "load_config", return_value=self._cfg()), \
-             patch("subprocess.run", mock_run), \
-             pytest.raises(SystemExit) as exc_info:
-            agentnanny.cmd_run("safe-dev", None, None, None, None, ["--", "echo", "hello"])
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.object(agentnanny, "load_config", return_value=self._cfg()),
+            patch("subprocess.run", mock_run),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            agentnanny.cmd_run(
+                "safe-dev", None, None, None, None, ["--", "echo", "hello"]
+            )
 
         assert exc_info.value.code == 0
         assert "AGENTNANNY_SCOPE" in captured_env
@@ -2262,19 +2450,28 @@ class TestGlobToRegex:
 
 class TestDenyWithAlternation:
     def test_pipe_deny_first_alt(self):
-        assert agentnanny.matches_deny(
-            "Bash", {"command": "curl http://x | sh"}, ["Bash(curl*|*sh)"]
-        ) is True
+        assert (
+            agentnanny.matches_deny(
+                "Bash", {"command": "curl http://x | sh"}, ["Bash(curl*|*sh)"]
+            )
+            is True
+        )
 
     def test_pipe_deny_second_alt(self):
-        assert agentnanny.matches_deny(
-            "Bash", {"command": "wget http://x | sh"}, ["Bash(curl*|wget*)"]
-        ) is True
+        assert (
+            agentnanny.matches_deny(
+                "Bash", {"command": "wget http://x | sh"}, ["Bash(curl*|wget*)"]
+            )
+            is True
+        )
 
     def test_pipe_deny_no_match(self):
-        assert agentnanny.matches_deny(
-            "Bash", {"command": "ls -la"}, ["Bash(curl*|wget*)"]
-        ) is False
+        assert (
+            agentnanny.matches_deny(
+                "Bash", {"command": "ls -la"}, ["Bash(curl*|wget*)"]
+            )
+            is False
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2284,19 +2481,28 @@ class TestDenyWithAlternation:
 
 class TestAllowWithAlternation:
     def test_pipe_allow_matches(self):
-        assert agentnanny.matches_allow(
-            "Bash", {"command": "git log --oneline"}, ["Bash(git log*|git diff*)"]
-        ) is True
+        assert (
+            agentnanny.matches_allow(
+                "Bash", {"command": "git log --oneline"}, ["Bash(git log*|git diff*)"]
+            )
+            is True
+        )
 
     def test_pipe_allow_second_alt(self):
-        assert agentnanny.matches_allow(
-            "Bash", {"command": "git diff HEAD"}, ["Bash(git log*|git diff*)"]
-        ) is True
+        assert (
+            agentnanny.matches_allow(
+                "Bash", {"command": "git diff HEAD"}, ["Bash(git log*|git diff*)"]
+            )
+            is True
+        )
 
     def test_pipe_allow_no_match(self):
-        assert agentnanny.matches_allow(
-            "Bash", {"command": "git push --force"}, ["Bash(git log*|git diff*)"]
-        ) is False
+        assert (
+            agentnanny.matches_allow(
+                "Bash", {"command": "git push --force"}, ["Bash(git log*|git diff*)"]
+            )
+            is False
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2371,7 +2577,9 @@ class TestPrune:
         # Expired session
         expired_policy = {
             "scope_id": "be001234",
-            "created": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(timespec="seconds"),
+            "created": (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat(
+                timespec="seconds"
+            ),
             "ttl_seconds": 3600,
             "allow_groups": [],
             "allow_tools": [],
@@ -2410,6 +2618,35 @@ class TestPrune:
         out = capsys.readouterr().out
         assert "No sessions" in out
 
+    def test_prune_codex_removes_stale_rules(self, tmp_path, capsys):
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir()
+        active_policy = {
+            "scope_id": "face1234",
+            "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "ttl_seconds": 36000,
+            "allow_groups": ["shell"],
+            "allow_tools": [],
+            "deny": [],
+        }
+        (sess_dir / "face1234.json").write_text(json.dumps(active_policy))
+        codex_home = tmp_path / ".codex"
+        rules_dir = codex_home / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "agentnanny-face1234.rules").write_text("# active\n")
+        (rules_dir / "agentnanny-deadbeef.rules").write_text("# stale\n")
+
+        with (
+            patch.object(agentnanny, "SESSION_DIR", sess_dir),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+        ):
+            agentnanny.cmd_prune(target="codex")
+
+        assert (rules_dir / "agentnanny-face1234.rules").exists()
+        assert not (rules_dir / "agentnanny-deadbeef.rules").exists()
+        out = capsys.readouterr().out
+        assert "Pruned 1 stale Codex rule file" in out
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Pattern validation on activate
@@ -2425,9 +2662,11 @@ class TestPatternValidation:
             "logging": {},
             "daemon": {},
         }
-        with patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.object(agentnanny, "generate_scope_id", return_value="a0b1c2d3"), \
-             patch.object(agentnanny, "save_session_policy"):
+        with (
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.object(agentnanny, "generate_scope_id", return_value="a0b1c2d3"),
+            patch.object(agentnanny, "save_session_policy"),
+        ):
             with pytest.raises(ValueError, match="Invalid deny pattern"):
                 agentnanny.cmd_activate(None, "shell", None, "[invalid", None)
 
@@ -2439,9 +2678,13 @@ class TestPatternValidation:
             "logging": {},
             "daemon": {},
         }
-        with patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.object(agentnanny, "generate_scope_id", return_value="a0b1c2d3"), \
-             patch.object(agentnanny, "save_session_policy", return_value=Path("/tmp/fake")):
+        with (
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.object(agentnanny, "generate_scope_id", return_value="a0b1c2d3"),
+            patch.object(
+                agentnanny, "save_session_policy", return_value=Path("/tmp/fake")
+            ),
+        ):
             agentnanny.cmd_activate(None, "shell", None, "Bash(rm*|dd*)", None)
         out = capsys.readouterr().out
         assert "AGENTNANNY_SCOPE" in out
@@ -2456,21 +2699,31 @@ class TestTomlLib:
     def test_tomllib_used_when_available(self, tmp_path):
         config = tmp_path / "config.toml"
         config.write_text('[daemon]\nsession = "test"\n')
-        with patch.object(agentnanny, "CONFIG_PATH", config), \
-             patch.object(agentnanny, "_user_config_path", return_value=tmp_path / "noexist"), \
-             patch.object(agentnanny, "_find_project_config", return_value=None):
+        with (
+            patch.object(agentnanny, "CONFIG_PATH", config),
+            patch.object(
+                agentnanny, "_user_config_path", return_value=tmp_path / "noexist"
+            ),
+            patch.object(agentnanny, "_find_project_config", return_value=None),
+        ):
             cfg = agentnanny.load_config()
         assert cfg["daemon"]["session"] == "test"
 
     def test_fallback_to_parse_toml_when_no_tomllib(self, tmp_path):
         config = tmp_path / "config.toml"
         config.write_text('[daemon]\nsession = "fallback"\n')
-        with patch.object(agentnanny, "tomllib", None), \
-             patch.object(agentnanny, "CONFIG_PATH", config), \
-             patch.object(agentnanny, "_user_config_path", return_value=tmp_path / "noexist"), \
-             patch.object(agentnanny, "_find_project_config", return_value=None):
+        with (
+            patch.object(agentnanny, "tomllib", None),
+            patch.object(agentnanny, "CONFIG_PATH", config),
+            patch.object(
+                agentnanny, "_user_config_path", return_value=tmp_path / "noexist"
+            ),
+            patch.object(agentnanny, "_find_project_config", return_value=None),
+        ):
             cfg = agentnanny.load_config()
         assert cfg["daemon"]["session"] == "fallback"
+
+
 # List groups
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -2552,8 +2805,10 @@ class TestExplain:
             "allow_tools": ["Bash"],
             "deny": [],
         }
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path), \
-             patch.dict(os.environ, {"AGENTNANNY_SCOPE": scope_id}):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path),
+            patch.dict(os.environ, {"AGENTNANNY_SCOPE": scope_id}),
+        ):
             agentnanny.save_session_policy(policy)
             agentnanny.cmd_explain(None)
         out = capsys.readouterr().out
@@ -2585,6 +2840,8 @@ class TestExplain:
         assert "Read" in out
         assert "Write" in out
         assert "Edit" in out
+
+
 # evaluate_policy — pure dry-run evaluation
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -2612,7 +2869,10 @@ class TestEvaluatePolicy:
         cfg = {"hooks": {}}
         with patch.object(agentnanny, "SESSION_DIR", session_dir):
             verdict, reason = agentnanny.evaluate_policy(
-                "Bash", {"command": "rm -rf /"}, cfg, scope_id,
+                "Bash",
+                {"command": "rm -rf /"},
+                cfg,
+                scope_id,
             )
         assert verdict == "deny"
         assert "session deny" in reason
@@ -2708,16 +2968,20 @@ class TestCmdTestPolicy:
         session_dir.mkdir(parents=True)
         (session_dir / f"{scope_id}.json").write_text(json.dumps(policy))
         cfg = {"hooks": {}}
-        with patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.object(agentnanny, "SESSION_DIR", session_dir):
+        with (
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.object(agentnanny, "SESSION_DIR", session_dir),
+        ):
             agentnanny.cmd_test_policy("Read", "{}", scope_id)
         out = capsys.readouterr().out
         assert "allow" in out
 
     def test_cli_passthrough_output(self, capsys):
         cfg = {"hooks": {}}
-        with patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.dict(os.environ, {}, clear=False):
+        with (
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.dict(os.environ, {}, clear=False),
+        ):
             # Ensure no AGENTNANNY_SCOPE in env
             env = os.environ.copy()
             env.pop("AGENTNANNY_SCOPE", None)
@@ -2725,6 +2989,8 @@ class TestCmdTestPolicy:
                 agentnanny.cmd_test_policy("Bash", "{}", None)
         out = capsys.readouterr().out
         assert "passthrough" in out
+
+
 # show_log
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -2746,17 +3012,21 @@ class TestShowLog:
 
     def test_raw_format(self, tmp_path, capsys):
         log_path = self._write_log(tmp_path)
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}):
+        with patch.object(
+            agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}
+        ):
             agentnanny.show_log(output_format="raw")
         out = capsys.readouterr().out
         assert "Bash" in out
         assert "\t" in out
-        lines = [l for l in out.strip().splitlines() if l]
+        lines = [line for line in out.strip().splitlines() if line]
         assert len(lines) == 5
 
     def test_json_format(self, tmp_path, capsys):
         log_path = self._write_log(tmp_path)
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}):
+        with patch.object(
+            agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}
+        ):
             agentnanny.show_log(output_format="json")
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -2770,7 +3040,9 @@ class TestShowLog:
 
     def test_table_format(self, tmp_path, capsys):
         log_path = self._write_log(tmp_path)
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}):
+        with patch.object(
+            agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}
+        ):
             agentnanny.show_log(output_format="table")
         out = capsys.readouterr().out
         lines = out.strip().splitlines()
@@ -2785,7 +3057,9 @@ class TestShowLog:
 
     def test_filter_by_tool(self, tmp_path, capsys):
         log_path = self._write_log(tmp_path)
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}):
+        with patch.object(
+            agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}
+        ):
             agentnanny.show_log(output_format="json", filter_tool="Bash")
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -2794,7 +3068,9 @@ class TestShowLog:
 
     def test_filter_by_action(self, tmp_path, capsys):
         log_path = self._write_log(tmp_path)
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}):
+        with patch.object(
+            agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}
+        ):
             agentnanny.show_log(output_format="json", filter_action="denied")
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -2803,8 +3079,12 @@ class TestShowLog:
 
     def test_combined_filters(self, tmp_path, capsys):
         log_path = self._write_log(tmp_path)
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}):
-            agentnanny.show_log(output_format="json", filter_tool="Bash", filter_action="denied")
+        with patch.object(
+            agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}
+        ):
+            agentnanny.show_log(
+                output_format="json", filter_tool="Bash", filter_action="denied"
+            )
         out = capsys.readouterr().out
         data = json.loads(out)
         assert len(data) == 1
@@ -2813,7 +3093,9 @@ class TestShowLog:
 
     def test_lines_limit(self, tmp_path, capsys):
         log_path = self._write_log(tmp_path)
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}):
+        with patch.object(
+            agentnanny, "load_config", return_value={"logging": {"audit_log": log_path}}
+        ):
             agentnanny.show_log(lines_count=2, output_format="json")
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -2824,7 +3106,11 @@ class TestShowLog:
 
     def test_empty_log(self, tmp_path, capsys):
         # Missing log file
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": str(tmp_path / "nonexistent.log")}}):
+        with patch.object(
+            agentnanny,
+            "load_config",
+            return_value={"logging": {"audit_log": str(tmp_path / "nonexistent.log")}},
+        ):
             agentnanny.show_log()
         out = capsys.readouterr().out
         assert "No log file" in out
@@ -2832,10 +3118,16 @@ class TestShowLog:
         # Empty log file
         empty_log = tmp_path / "empty.log"
         empty_log.write_text("", encoding="utf-8")
-        with patch.object(agentnanny, "load_config", return_value={"logging": {"audit_log": str(empty_log)}}):
+        with patch.object(
+            agentnanny,
+            "load_config",
+            return_value={"logging": {"audit_log": str(empty_log)}},
+        ):
             agentnanny.show_log()
         out = capsys.readouterr().out
         assert "No matching log entries" in out
+
+
 # PostToolUse hook
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -2862,10 +3154,12 @@ class TestPostToolUseHook:
         if status is not None:
             status_file.write_text(json.dumps(status), encoding="utf-8")
 
-        with patch.object(sys, "stdin", stdin), \
-             patch.object(sys, "stdout", stdout), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch("pathlib.Path.home", return_value=tmp_path):
+        with (
+            patch.object(sys, "stdin", stdin),
+            patch.object(sys, "stdout", stdout),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
             agentnanny.handle_post_hook()
 
         raw = stdout.getvalue()
@@ -2880,11 +3174,13 @@ class TestPostToolUseHook:
         stdin = StringIO(json.dumps(event))
         stdout = StringIO()
 
-        with patch.object(sys, "stdin", stdin), \
-             patch.object(sys, "stdout", stdout), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch("pathlib.Path.home", return_value=tmp_path), \
-             patch.object(agentnanny, "audit_log") as mock_log:
+        with (
+            patch.object(sys, "stdin", stdin),
+            patch.object(sys, "stdout", stdout),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch.object(agentnanny, "audit_log") as mock_log,
+        ):
             agentnanny.handle_post_hook()
 
         mock_log.assert_called_once()
@@ -2922,7 +3218,9 @@ class TestPostToolUseHook:
     def test_post_hook_custom_thresholds(self, tmp_path):
         event = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
         cfg = self._make_cfg(warn_percent=50, critical_percent=70)
-        result = self._run_post_hook(event, tmp_path, cfg=cfg, status={"contextPercent": 55})
+        result = self._run_post_hook(
+            event, tmp_path, cfg=cfg, status={"contextPercent": 55}
+        )
         assert result is not None
         msg = result["hookSpecificOutput"]["message"]
         assert "WARNING" in msg
@@ -2976,8 +3274,10 @@ class TestPatchCodexConfig:
     def test_creates_config_file(self, tmp_path):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "config.toml"
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._patch_codex_config({"approval_policy": "on-request"})
 
         assert config_path.exists()
@@ -2990,8 +3290,10 @@ class TestPatchCodexConfig:
         config_path = codex_home / "config.toml"
         config_path.write_text('model = "o3"\n', encoding="utf-8")
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._patch_codex_config({"approval_policy": "never"})
 
         content = config_path.read_text(encoding="utf-8")
@@ -3004,8 +3306,10 @@ class TestPatchCodexConfig:
         config_path = codex_home / "config.toml"
         config_path.write_text('approval_policy = "on-request"\n', encoding="utf-8")
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._patch_codex_config({"approval_policy": "never"})
 
         content = config_path.read_text(encoding="utf-8")
@@ -3018,8 +3322,10 @@ class TestPatchCodexConfig:
         config_path = codex_home / "config.toml"
         config_path.write_text('# My config\nmodel = "o3"\n', encoding="utf-8")
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._patch_codex_config({"notify": ["python3", "agentnanny.py"]})
 
         content = config_path.read_text(encoding="utf-8")
@@ -3029,12 +3335,55 @@ class TestPatchCodexConfig:
     def test_writes_list_value(self, tmp_path):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "config.toml"
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._patch_codex_config({"notify": ["cmd", "arg1", "arg2"]})
 
         content = config_path.read_text(encoding="utf-8")
         assert 'notify = ["cmd", "arg1", "arg2"]' in content
+
+    def test_inserts_missing_key_before_first_table(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            'model = "gpt-5.5"\n\n[mcp_servers.file-system]\nenabled = true\n',
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny._patch_codex_config({"approval_policy": "never"})
+
+        lines = config_path.read_text(encoding="utf-8").splitlines()
+        assert lines.index('approval_policy = "never"') < lines.index(
+            "[mcp_servers.file-system]"
+        )
+
+    def test_replaces_only_top_level_key(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            'approval_policy = "on-request"\n\n'
+            "[mcp_servers.file-system]\n"
+            'approval_policy = "never"\n',
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny._patch_codex_config({"approval_policy": "never"})
+
+        content = config_path.read_text(encoding="utf-8")
+        assert content.count('approval_policy = "never"') == 2
+        assert "on-request" not in content
 
 
 class TestRemoveCodexConfigKeys:
@@ -3042,7 +3391,9 @@ class TestRemoveCodexConfigKeys:
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         config_path = codex_home / "config.toml"
-        config_path.write_text('model = "o3"\napproval_policy = "never"\n', encoding="utf-8")
+        config_path.write_text(
+            'model = "o3"\napproval_policy = "never"\n', encoding="utf-8"
+        )
 
         with patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
             result = agentnanny._remove_codex_config_keys(["approval_policy"])
@@ -3068,11 +3419,30 @@ class TestRemoveCodexConfigKeys:
             result = agentnanny._remove_codex_config_keys(["approval_policy"])
         assert result is False
 
+    def test_removes_only_top_level_key(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            'approval_policy = "never"\n\n'
+            "[mcp_servers.file-system]\n"
+            'approval_policy = "on-request"\n',
+            encoding="utf-8",
+        )
+
+        with patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+            result = agentnanny._remove_codex_config_keys(["approval_policy"])
+
+        assert result is True
+        content = config_path.read_text(encoding="utf-8")
+        assert content.startswith("\n[mcp_servers.file-system]")
+        assert 'approval_policy = "on-request"' in content
+
 
 class TestPatternsToCodexRules:
     def test_deny_bash_pattern(self):
         rules = agentnanny._patterns_to_codex_rules(["Bash(rm -rf /*)"], "forbidden")
-        assert 'pattern=["rm -rf /"]' in rules
+        assert 'pattern=["rm", "-rf", "/"]' in rules
         assert 'decision="forbidden"' in rules
         assert 'justification="blocked by agentnanny"' in rules
 
@@ -3086,18 +3456,23 @@ class TestPatternsToCodexRules:
         assert rules.strip() == ""
 
     def test_deny_git_push_force(self):
-        rules = agentnanny._patterns_to_codex_rules(["Bash(git push --force*)"], "forbidden")
-        assert 'pattern=["git push --force"]' in rules
+        rules = agentnanny._patterns_to_codex_rules(
+            ["Bash(git push --force*)"], "forbidden"
+        )
+        assert 'pattern=["git", "push", "--force"]' in rules
         assert 'decision="forbidden"' in rules
 
     def test_deny_mixed_patterns(self):
-        rules = agentnanny._patterns_to_codex_rules([
-            "Bash(rm -rf /*)",
-            "WebFetch",
-            "Bash(DROP TABLE*)",
-        ], "forbidden")
-        assert 'pattern=["rm -rf /"]' in rules
-        assert 'pattern=["DROP TABLE"]' in rules
+        rules = agentnanny._patterns_to_codex_rules(
+            [
+                "Bash(rm -rf /*)",
+                "WebFetch",
+                "Bash(DROP TABLE*)",
+            ],
+            "forbidden",
+        )
+        assert 'pattern=["rm", "-rf", "/"]' in rules
+        assert 'pattern=["DROP", "TABLE"]' in rules
         assert "WebFetch" not in rules
 
     def test_allow_bash_pattern(self):
@@ -3107,12 +3482,17 @@ class TestPatternsToCodexRules:
         assert 'justification="allowed by agentnanny"' in rules
 
     def test_allow_git_commands(self):
-        rules = agentnanny._patterns_to_codex_rules([
-            "Bash(git log*)", "Bash(git diff*)", "Bash(git show*)",
-        ], "allow")
-        assert 'pattern=["git log"]' in rules
-        assert 'pattern=["git diff"]' in rules
-        assert 'pattern=["git show"]' in rules
+        rules = agentnanny._patterns_to_codex_rules(
+            [
+                "Bash(git log*)",
+                "Bash(git diff*)",
+                "Bash(git show*)",
+            ],
+            "allow",
+        )
+        assert 'pattern=["git", "log"]' in rules
+        assert 'pattern=["git", "diff"]' in rules
+        assert 'pattern=["git", "show"]' in rules
 
     def test_allow_non_bash_skipped(self):
         rules = agentnanny._patterns_to_codex_rules(["Read", "Glob", "Grep"], "allow")
@@ -3169,25 +3549,31 @@ class TestWriteRemoveCodexRules:
 
 
 class TestInstallUninstallCodex:
-    def test_install_creates_notify(self, tmp_path):
+    def test_install_creates_lifecycle_hooks(self, tmp_path):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "config.toml"
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny.install_codex_hooks()
 
         content = config_path.read_text(encoding="utf-8")
         assert "agentnanny" in content
-        assert "codex-hook" in content
-        assert content.startswith("notify = [")
+        assert "PermissionRequest" in content
+        assert "PostToolUse" in content
+        assert "codex_hooks = true" in content
+        assert "codex-hook" not in content
 
     def test_install_idempotent(self, tmp_path):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "config.toml"
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny.install_codex_hooks()
             with pytest.raises(SystemExit):
                 agentnanny.install_codex_hooks()
@@ -3198,25 +3584,50 @@ class TestInstallUninstallCodex:
         config_path = codex_home / "config.toml"
         config_path.write_text('model = "o3"\n', encoding="utf-8")
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny.install_codex_hooks()
 
         content = config_path.read_text(encoding="utf-8")
         assert 'model = "o3"' in content
         assert "agentnanny" in content
 
-    def test_uninstall_removes_notify(self, tmp_path):
+    def test_uninstall_removes_lifecycle_hooks(self, tmp_path):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "config.toml"
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny.install_codex_hooks()
             agentnanny.uninstall_codex_hooks()
 
         content = config_path.read_text(encoding="utf-8")
+        assert agentnanny.CODEX_HOOK_MARKER_START not in content
+        assert "PermissionRequest" not in content
+
+    def test_install_removes_legacy_notify(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            "[mcp_servers.file-system]\n"
+            'notify = ["python3", "agentnanny.py", "codex-hook"]\n',
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny.install_codex_hooks(force=True)
+
+        content = config_path.read_text(encoding="utf-8")
         assert "notify" not in content
+        assert "PermissionRequest" in content
 
     def test_uninstall_no_config_exits(self, tmp_path):
         config_path = tmp_path / "nonexistent.toml"
@@ -3231,8 +3642,10 @@ class TestInstallUninstallCodex:
         rules_dir.mkdir(parents=True)
         (rules_dir / "agentnanny-abc12345.rules").write_text("# test\n")
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny.install_codex_hooks()
             agentnanny.uninstall_codex_hooks()
 
@@ -3248,9 +3661,11 @@ class TestCodexHook:
         stdin = StringIO(json.dumps(event))
         cfg = {"hooks": {}, "logging": {"audit_log": os.devnull, "level": "all"}}
 
-        with patch.object(sys, "stdin", stdin), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.object(agentnanny, "audit_log") as mock_log:
+        with (
+            patch.object(sys, "stdin", stdin),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.object(agentnanny, "audit_log") as mock_log,
+        ):
             agentnanny.handle_codex_hook()
 
         mock_log.assert_called_once()
@@ -3267,9 +3682,11 @@ class TestCodexHook:
         stdin = StringIO(json.dumps(event))
         cfg = {"hooks": {}, "logging": {"audit_log": os.devnull, "level": "all"}}
 
-        with patch.object(sys, "stdin", stdin), \
-             patch.object(agentnanny, "load_config", return_value=cfg), \
-             patch.object(agentnanny, "audit_log") as mock_log:
+        with (
+            patch.object(sys, "stdin", stdin),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+            patch.object(agentnanny, "audit_log") as mock_log,
+        ):
             agentnanny.handle_codex_hook()
 
         assert mock_log.call_args[0][3] == "patch content"
@@ -3295,12 +3712,14 @@ class TestApplyRemoveCodexSession:
             "allow_tools": [],
         }
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._apply_codex_session(policy, cfg, "abc12345")
 
         content = config_path.read_text(encoding="utf-8")
-        assert 'approval_policy = "unless-trusted"' in content
+        assert 'approval_policy = "on-request"' in content
 
     def test_apply_full_dev_sets_never(self, tmp_path):
         codex_home = tmp_path / ".codex"
@@ -3313,8 +3732,10 @@ class TestApplyRemoveCodexSession:
             "allow_tools": [],
         }
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             state = agentnanny._apply_codex_session(policy, cfg, "abc12345")
 
         content = config_path.read_text(encoding="utf-8")
@@ -3326,17 +3747,20 @@ class TestApplyRemoveCodexSession:
         codex_home.mkdir()
         config_path = codex_home / "config.toml"
         config_path.write_text(
-            '\n'.join([
-                '[mcp_servers.git-tools]',
-                'enabled = true',
-                '',
-                '[mcp_servers.git-tools.tools.git_status]',
-                'approval_mode = "approve"',
-                '',
-                '[mcp_servers.tavily-remote-mcp.tools.tavily_map]',
-                'approval_mode = "approve"',
-                '',
-            ]),
+            "\n".join(
+                [
+                    "[mcp_servers.git-tools]",
+                    "enabled = true",
+                    'approval_policy = "never"',
+                    "",
+                    "[mcp_servers.git-tools.tools.git_status]",
+                    'approval_mode = "approve"',
+                    "",
+                    "[mcp_servers.tavily-remote-mcp.tools.tavily_map]",
+                    'approval_mode = "approve"',
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
         cfg = self._make_cfg()
@@ -3347,18 +3771,24 @@ class TestApplyRemoveCodexSession:
             "allow_tools": [],
         }
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             state = agentnanny._apply_codex_session(policy, cfg, "abc12345")
 
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "never"' in content
-        assert '[mcp_servers.git-tools.tools.git_status]' in content
-        assert '[mcp_servers.tavily-remote-mcp.tools.tavily_map]' in content
+        assert "[mcp_servers.git-tools.tools.git_status]" in content
+        assert "[mcp_servers.tavily-remote-mcp.tools.tavily_map]" in content
         assert 'approval_mode = "approve"' not in content
+        assert 'enabled = true\napproval_policy = "never"' not in content
         assert state["suspended_mcp_approval_modes"] == {
-            "mcp_servers.git-tools.tools.git_status": '"approve"',
-            "mcp_servers.tavily-remote-mcp.tools.tavily_map": '"approve"',
+            "mcp_servers.git-tools": {"approval_policy": '"never"'},
+            "mcp_servers.git-tools.tools.git_status": {"approval_mode": '"approve"'},
+            "mcp_servers.tavily-remote-mcp.tools.tavily_map": {
+                "approval_mode": '"approve"'
+            },
         }
 
     def test_apply_generates_deny_rules(self, tmp_path):
@@ -3372,15 +3802,17 @@ class TestApplyRemoveCodexSession:
             "allow_tools": [],
         }
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._apply_codex_session(policy, cfg, "abc12345")
 
         rules_path = codex_home / "rules" / "agentnanny-abc12345.rules"
         assert rules_path.exists()
         content = rules_path.read_text(encoding="utf-8")
-        assert 'pattern=["rm -rf /"]' in content
-        assert 'pattern=["git push --force"]' in content
+        assert 'pattern=["rm", "-rf", "/"]' in content
+        assert 'pattern=["git", "push", "--force"]' in content
         assert 'decision="forbidden"' in content
 
     def test_apply_generates_allow_rules(self, tmp_path):
@@ -3394,14 +3826,16 @@ class TestApplyRemoveCodexSession:
             "allow_tools": [],
         }
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._apply_codex_session(policy, cfg, "abc12345")
 
         rules_path = codex_home / "rules" / "agentnanny-abc12345.rules"
         assert rules_path.exists()
         content = rules_path.read_text(encoding="utf-8")
-        assert 'pattern=["git log"]' in content
+        assert 'pattern=["git", "log"]' in content
         assert 'decision="allow"' in content
 
     def test_remove_cleans_up(self, tmp_path):
@@ -3413,8 +3847,10 @@ class TestApplyRemoveCodexSession:
         rules_dir.mkdir()
         (rules_dir / "agentnanny-abc12345.rules").write_text("# test\n")
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._remove_codex_session("abc12345")
 
         assert not (rules_dir / "agentnanny-abc12345.rules").exists()
@@ -3426,33 +3862,40 @@ class TestApplyRemoveCodexSession:
         codex_home.mkdir()
         config_path = codex_home / "config.toml"
         config_path.write_text(
-            '\n'.join([
-                'approval_policy = "never"',
-                '',
-                '[mcp_servers.git-tools.tools.git_status]',
-                '',
-            ]) + '\n',
+            "\n".join(
+                [
+                    'approval_policy = "never"',
+                    "",
+                    "[mcp_servers.git-tools.tools.git_status]",
+                    "",
+                ]
+            )
+            + "\n",
             encoding="utf-8",
         )
         rules_dir = codex_home / "rules"
         rules_dir.mkdir()
         (rules_dir / "agentnanny-abc12345.rules").write_text("# test\n")
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._remove_codex_session(
                 "abc12345",
                 {
                     "previous_approval_policy": "unless-trusted",
                     "suspended_mcp_approval_modes": {
-                        "mcp_servers.git-tools.tools.git_status": '"approve"',
+                        "mcp_servers.git-tools.tools.git_status": {
+                            "approval_mode": '"approve"'
+                        },
                     },
                 },
             )
 
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "unless-trusted"' in content
-        assert '[mcp_servers.git-tools.tools.git_status]' in content
+        assert "[mcp_servers.git-tools.tools.git_status]" in content
         assert 'approval_mode = "approve"' in content
 
     def test_unknown_profile_defaults_on_request(self, tmp_path):
@@ -3465,8 +3908,10 @@ class TestApplyRemoveCodexSession:
             "allow_tools": ["Bash"],
         }
 
-        with patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             agentnanny._apply_codex_session(policy, cfg, "abc12345")
 
         content = config_path.read_text(encoding="utf-8")
@@ -3483,17 +3928,19 @@ class TestActivateDeactivateCodex:
             "profiles": {k: dict(v) for k, v in agentnanny.BUILTIN_PROFILES.items()},
             "logging": {"audit_log": os.devnull},
         }
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"), \
-             patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path), \
-             patch.object(agentnanny, "load_config", return_value=cfg):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+            patch.object(agentnanny, "load_config", return_value=cfg),
+        ):
             agentnanny.cmd_activate("safe-dev", None, None, None, "8h", target="codex")
 
         out = capsys.readouterr().out
         assert "export AGENTNANNY_SCOPE=" in out
         assert config_path.exists()
         content = config_path.read_text(encoding="utf-8")
-        assert "unless-trusted" in content
+        assert 'approval_policy = "on-request"' in content
 
     def test_deactivate_codex_target(self, tmp_path, capsys):
         codex_home = tmp_path / ".codex"
@@ -3504,18 +3951,22 @@ class TestActivateDeactivateCodex:
         rules_dir.mkdir()
         (rules_dir / "agentnanny-dea01234.rules").write_text("# test\n")
 
-        with patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"), \
-             patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path):
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
             (tmp_path / "sessions").mkdir()
-            agentnanny.save_session_policy({
-                "scope_id": "dea01234",
-                "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "ttl_seconds": 0,
-                "allow_groups": [],
-                "allow_tools": [],
-                "deny": [],
-            })
+            agentnanny.save_session_policy(
+                {
+                    "scope_id": "dea01234",
+                    "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "ttl_seconds": 0,
+                    "allow_groups": [],
+                    "allow_tools": [],
+                    "deny": [],
+                }
+            )
             agentnanny.cmd_deactivate("dea01234", target="codex")
 
         out = capsys.readouterr().out
@@ -3526,11 +3977,12 @@ class TestActivateDeactivateCodex:
 class TestCodexApprovalMap:
     def test_all_builtin_profiles_mapped(self):
         for name in agentnanny.BUILTIN_PROFILES:
-            assert name in agentnanny.CODEX_APPROVAL_MAP, \
+            assert name in agentnanny.CODEX_APPROVAL_MAP, (
                 f"Profile {name!r} missing from CODEX_APPROVAL_MAP"
+            )
 
     def test_values_are_valid_codex_policies(self):
-        valid = {"never", "on-failure", "on-request", "unless-trusted"}
+        valid = {"never", "on-request", "untrusted"}
         for name, policy in agentnanny.CODEX_APPROVAL_MAP.items():
             assert policy in valid, f"{name} maps to invalid policy {policy!r}"
 
@@ -3542,7 +3994,9 @@ class TestBuildPolicy:
             "groups": dict(agentnanny.BUILTIN_GROUPS),
             "profiles": {k: dict(v) for k, v in agentnanny.BUILTIN_PROFILES.items()},
         }
-        policy, scope_id = agentnanny._build_policy("safe-dev", None, None, None, "1h", cfg)
+        policy, scope_id = agentnanny._build_policy(
+            "safe-dev", None, None, None, "1h", cfg
+        )
         assert policy["_profile_name"] == "safe-dev"
         assert policy["ttl_seconds"] == 3600
 
@@ -3557,7 +4011,9 @@ class TestBuildPolicy:
             "groups": {"shell": ["Bash"], "read-only": ["Read", "Glob", "Grep"]},
             "profiles": {},
         }
-        policy, _ = agentnanny._build_policy(None, "shell,read-only", "Write", None, "0", cfg)
+        policy, _ = agentnanny._build_policy(
+            None, "shell,read-only", "Write", None, "0", cfg
+        )
         assert policy["allow_groups"] == ["shell", "read-only"]
         assert policy["allow_tools"] == ["Write"]
 
@@ -3568,38 +4024,44 @@ class TestCodexStatus:
         codex_home.mkdir()
         config_path = codex_home / "config.toml"
         config_path.write_text(
-            'notify = ["python3", "agentnanny.py", "codex-hook"]\n'
-            'approval_policy = "never"\n',
+            'approval_policy = "never"\n'
+            f"{agentnanny.CODEX_HOOK_MARKER_START}\n"
+            "[[hooks.PermissionRequest]]\n"
+            f"{agentnanny.CODEX_HOOK_MARKER_END}\n",
             encoding="utf-8",
         )
 
-        with patch.object(agentnanny, "SETTINGS_PATH", tmp_path / "nonexistent.json"), \
-             patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path), \
-             patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"), \
-             patch.dict(os.environ, {}, clear=False):
+        with (
+            patch.object(agentnanny, "SETTINGS_PATH", tmp_path / "nonexistent.json"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.dict(os.environ, {}, clear=False),
+        ):
             os.environ.pop("AGENTNANNY_SCOPE", None)
             agentnanny.show_status()
 
         err = capsys.readouterr().out
         assert "Codex CLI" in err
-        assert "Notify hook installed: yes" in err
+        assert "Lifecycle hooks installed: yes" in err
         assert "Approval policy: never" in err
 
     def test_shows_codex_not_installed(self, tmp_path, capsys):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "nonexistent.toml"
 
-        with patch.object(agentnanny, "SETTINGS_PATH", tmp_path / "nonexistent.json"), \
-             patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path), \
-             patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"), \
-             patch.dict(os.environ, {}, clear=False):
+        with (
+            patch.object(agentnanny, "SETTINGS_PATH", tmp_path / "nonexistent.json"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.dict(os.environ, {}, clear=False),
+        ):
             os.environ.pop("AGENTNANNY_SCOPE", None)
             agentnanny.show_status()
 
         err = capsys.readouterr().out
-        assert "Notify hook installed: no" in err
+        assert "Lifecycle hooks installed: no" in err
 
     def test_shows_rules_count(self, tmp_path, capsys):
         codex_home = tmp_path / ".codex"
@@ -3611,11 +4073,13 @@ class TestCodexStatus:
         (rules_dir / "agentnanny-abc12345.rules").write_text("# 1\n")
         (rules_dir / "agentnanny-def67890.rules").write_text("# 2\n")
 
-        with patch.object(agentnanny, "SETTINGS_PATH", tmp_path / "nonexistent.json"), \
-             patch.object(agentnanny, "CODEX_HOME", codex_home), \
-             patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path), \
-             patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"), \
-             patch.dict(os.environ, {}, clear=False):
+        with (
+            patch.object(agentnanny, "SETTINGS_PATH", tmp_path / "nonexistent.json"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.dict(os.environ, {}, clear=False),
+        ):
             os.environ.pop("AGENTNANNY_SCOPE", None)
             agentnanny.show_status()
 
