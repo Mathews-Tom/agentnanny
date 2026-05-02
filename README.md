@@ -8,7 +8,7 @@ agentnanny auto-approves the tools you trust (file reads, shell commands, etc.) 
 
 **After:** Pick a profile, start working. Safe operations auto-approve. Dangerous commands still prompt.
 
-**Supports:** Claude Code (hooks) and OpenAI Codex CLI (exec policy rules + config patching).
+**Supports:** Claude Code (hooks) and OpenAI Codex CLI (lifecycle hooks, exec policy rules, and config patching).
 
 ## Quick Start
 
@@ -78,14 +78,15 @@ Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 # ── agentnanny ──────────────────────────────────────────────────────────
-_AN="$(command -v agentnanny.py 2>/dev/null || echo /path/to/agentnanny.py)"
-nanny-on()  { eval $(python "$_AN" activate "$@"); }
-nanny-off() { eval $(python "$_AN" deactivate); }
+_AN="/path/to/agentnanny.py"
+_AN_PY="$(command -v python3)"
+nanny-on()  { eval "$("$_AN_PY" "$_AN" activate "$@")"; }
+nanny-off() { eval "$("$_AN_PY" "$_AN" deactivate "$@")"; }
 alias nanny-safe='nanny-on safe-dev'
 alias nanny-full='nanny-on full-dev'
 alias nanny-night='nanny-on overnight'
-alias nanny-status='python "$_AN" status'
-alias nanny-log='python "$_AN" log'
+alias nanny-status='"$_AN_PY" "$_AN" status'
+alias nanny-log='"$_AN_PY" "$_AN" log'
 ```
 
 ```bash
@@ -113,11 +114,11 @@ Uninstall: `python agentnanny.py uninstall`
 ### Codex CLI
 
 ```bash
-python agentnanny.py install --target codex     # register notify hook in ~/.codex/config.toml
+python agentnanny.py install --target codex     # register lifecycle hooks in ~/.codex/config.toml
 python agentnanny.py uninstall --target codex   # remove hooks and exec policy rules
 ```
 
-`install --target codex` registers agentnanny as a notify handler for audit logging. Use `--target codex` on `activate`, `deactivate`, and `run` to also manage Codex exec policy rules and approval policy.
+`install --target codex` enables Codex lifecycle hooks and registers `PermissionRequest` plus `PostToolUse` handlers. Use `--target codex` on `activate`, `deactivate`, and `run` to also manage Codex exec policy rules and approval policy.
 
 ```bash
 python agentnanny.py run safe-dev --target codex -- codex -q "refactor auth"
@@ -129,13 +130,13 @@ Profile-to-Codex approval policy mapping:
 
 | Profile | approval_policy |
 |---|---|
-| reviewer | unless-trusted |
-| safe-dev | unless-trusted |
+| reviewer | on-request |
+| safe-dev | on-request |
 | full-dev | never |
 | overnight | never |
 | ci-runner | never |
 
-Deny/allow `Bash(...)` patterns translate to Codex Starlark `prefix_rule()` directives in `~/.codex/rules/`. Non-Bash patterns are skipped because Codex governs native tool execution through `approval_policy`. When activating a Codex-targeted session, agentnanny also suspends explicit MCP tool `approval_mode` overrides in `~/.codex/config.toml` for the lifetime of the session so those tools fall back to the active top-level policy, then restores the prior MCP settings on deactivate.
+Deny/allow `Bash(...)` patterns translate to Codex Starlark `prefix_rule()` directives in `~/.codex/rules/`. Multi-word command prefixes are emitted as argv-token prefixes, for example `Bash(git push --force*)` becomes `pattern=["git", "push", "--force"]`. Non-Bash patterns are skipped because Codex governs native tool execution through `approval_policy`. When activating a Codex-targeted session, agentnanny also suspends explicit MCP `approval_mode` and `approval_policy` overrides in `~/.codex/config.toml` for the lifetime of the session so those tools fall back to the active top-level policy, then restores the prior MCP settings on deactivate.
 
 ### Requirements
 
@@ -325,6 +326,7 @@ python agentnanny.py sessions            # list active sessions
 python agentnanny.py explain             # inspect current session (from AGENTNANNY_SCOPE)
 python agentnanny.py extend -g network   # add groups/tools/deny to current session
 python agentnanny.py prune               # remove expired session files
+python agentnanny.py prune --target codex # also remove stale Codex rule files
 ```
 
 ## tmux Daemon (Fallback)
@@ -356,7 +358,7 @@ Detects: permission prompts (selects "allow for project" or "yes"), trust prompt
 | `test-policy <tool>` | Dry-run policy evaluation |
 | `status` | Show hook + daemon + Codex status |
 | `log` | Tail the audit log (supports `--format`, `--tool`, `--action`, `-n`) |
-| `prune` | Remove expired session files |
+| `prune [--target]` | Remove expired session files and optional target artifacts |
 | `init` | Create `.agentnanny.toml` in current directory |
 | `watch [session]` | Start tmux daemon |
 | `stop` | Stop tmux daemon |
