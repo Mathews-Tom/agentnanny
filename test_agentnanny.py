@@ -133,6 +133,16 @@ class TestMatchesDeny:
             is True
         )
 
+    def test_mcp_write_file_path_pattern(self):
+        assert (
+            agentnanny.matches_deny(
+                "mcp__file-system__write_file",
+                {"path": "/etc/passwd"},
+                ["Write(/etc/*)"],
+            )
+            is True
+        )
+
     def test_webfetch_url_pattern(self):
         assert (
             agentnanny.matches_deny(
@@ -161,6 +171,23 @@ class TestPrimaryInput:
 
     def test_read(self):
         assert agentnanny._primary_input("Read", {"file_path": "/tmp/x"}) == "/tmp/x"
+
+    def test_mcp_write_file_path(self):
+        assert (
+            agentnanny._primary_input(
+                "mcp__file-system__write_file", {"path": "/tmp/x"}
+            )
+            == "/tmp/x"
+        )
+
+    def test_mcp_move_file_paths(self):
+        assert (
+            agentnanny._primary_input(
+                "mcp__file_system__move_file",
+                {"source": "/tmp/source", "destination": "/tmp/destination"},
+            )
+            == "/tmp/source /tmp/destination"
+        )
 
     def test_webfetch(self):
         assert agentnanny._primary_input("WebFetch", {"url": "http://x"}) == "http://x"
@@ -1356,6 +1383,26 @@ class TestMatchesAllow:
     def test_wildcard_all(self):
         assert agentnanny.matches_allow("AnyTool", {}, [".*"]) is True
 
+    def test_mcp_write_file_matches_filesystem_write(self):
+        assert (
+            agentnanny.matches_allow(
+                "mcp__file-system__write_file",
+                {"path": "/private/tmp/sieve-runtime-contract-pr.md"},
+                ["Write"],
+            )
+            is True
+        )
+
+    def test_mcp_write_file_path_pattern(self):
+        assert (
+            agentnanny.matches_allow(
+                "mcp__file_system__write_file",
+                {"path": "/private/tmp/sieve-runtime-contract-pr.md"},
+                ["Write(/private/tmp/*)"],
+            )
+            is True
+        )
+
     def test_no_match(self):
         assert agentnanny.matches_allow("Bash", {}, ["Read", "Write"]) is False
 
@@ -1440,6 +1487,28 @@ class TestHandleHookScoped:
         result = json.loads(raw)
         assert result["hookSpecificOutput"]["decision"]["behavior"] == "allow"
 
+    def test_scope_valid_policy_allows_mcp_write_file(self):
+        """Codex MCP filesystem writes map to the filesystem group."""
+        policy = {
+            "scope_id": "be001234",
+            "allow_groups": ["filesystem"],
+            "allow_tools": [],
+            "deny": [],
+        }
+        raw = self._run_hook_scoped(
+            {
+                "tool_name": "mcp__file-system__write_file",
+                "tool_input": {
+                    "path": "/private/tmp/sieve-runtime-contract-pr.md",
+                    "content": "## Summary\n",
+                },
+            },
+            scope_id="be001234",
+            policy=policy,
+        )
+        result = json.loads(raw)
+        assert result["hookSpecificOutput"]["decision"]["behavior"] == "allow"
+
     def test_scope_tool_not_in_allow_passthrough(self):
         """Tool not in session allow list → passthrough (empty output)."""
         policy = {
@@ -1484,6 +1553,26 @@ class TestHandleHookScoped:
             scope_id="be001234",
             policy=policy,
             global_deny=["Bash(rm*)"],
+        )
+        result = json.loads(raw)
+        assert result["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+
+    def test_scope_global_deny_blocks_mcp_write_file(self):
+        """Deny rules use the canonical filesystem tool and MCP path."""
+        policy = {
+            "scope_id": "be001234",
+            "allow_groups": ["filesystem"],
+            "allow_tools": [],
+            "deny": [],
+        }
+        raw = self._run_hook_scoped(
+            {
+                "tool_name": "mcp__file-system__write_file",
+                "tool_input": {"path": "/etc/passwd", "content": "x"},
+            },
+            scope_id="be001234",
+            policy=policy,
+            global_deny=["Write(/etc/*)"],
         )
         result = json.loads(raw)
         assert result["hookSpecificOutput"]["decision"]["behavior"] == "deny"
@@ -2893,6 +2982,30 @@ class TestEvaluatePolicy:
         cfg = {"hooks": {}}
         with patch.object(agentnanny, "SESSION_DIR", session_dir):
             verdict, reason = agentnanny.evaluate_policy("Read", {}, cfg, scope_id)
+        assert verdict == "allow"
+        assert "allowed by session" in reason
+
+    def test_session_group_allows_mcp_write_file(self, tmp_path):
+        scope_id = "aa11cc33"
+        policy = {
+            "scope_id": scope_id,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 0,
+            "allow_tools": [],
+            "allow_groups": ["filesystem"],
+            "deny": [],
+        }
+        session_dir = tmp_path / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"{scope_id}.json").write_text(json.dumps(policy))
+        cfg = {"hooks": {}, "groups": {"filesystem": ["Read", "Write", "Edit"]}}
+        with patch.object(agentnanny, "SESSION_DIR", session_dir):
+            verdict, reason = agentnanny.evaluate_policy(
+                "mcp__file-system__write_file",
+                {"path": "/private/tmp/sieve-runtime-contract-pr.md"},
+                cfg,
+                scope_id,
+            )
         assert verdict == "allow"
         assert "allowed by session" in reason
 
