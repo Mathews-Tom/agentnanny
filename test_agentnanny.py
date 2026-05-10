@@ -133,6 +133,16 @@ class TestMatchesDeny:
             is True
         )
 
+    def test_mcp_write_file_path_pattern(self):
+        assert (
+            agentnanny.matches_deny(
+                "mcp__file-system__write_file",
+                {"path": "/etc/passwd"},
+                ["Write(/etc/*)"],
+            )
+            is True
+        )
+
     def test_webfetch_url_pattern(self):
         assert (
             agentnanny.matches_deny(
@@ -161,6 +171,23 @@ class TestPrimaryInput:
 
     def test_read(self):
         assert agentnanny._primary_input("Read", {"file_path": "/tmp/x"}) == "/tmp/x"
+
+    def test_mcp_write_file_path(self):
+        assert (
+            agentnanny._primary_input(
+                "mcp__file-system__write_file", {"path": "/tmp/x"}
+            )
+            == "/tmp/x"
+        )
+
+    def test_mcp_move_file_paths(self):
+        assert (
+            agentnanny._primary_input(
+                "mcp__file_system__move_file",
+                {"source": "/tmp/source", "destination": "/tmp/destination"},
+            )
+            == "/tmp/source /tmp/destination"
+        )
 
     def test_webfetch(self):
         assert agentnanny._primary_input("WebFetch", {"url": "http://x"}) == "http://x"
@@ -1356,6 +1383,26 @@ class TestMatchesAllow:
     def test_wildcard_all(self):
         assert agentnanny.matches_allow("AnyTool", {}, [".*"]) is True
 
+    def test_mcp_write_file_matches_filesystem_write(self):
+        assert (
+            agentnanny.matches_allow(
+                "mcp__file-system__write_file",
+                {"path": "/private/tmp/sieve-runtime-contract-pr.md"},
+                ["Write"],
+            )
+            is True
+        )
+
+    def test_mcp_write_file_path_pattern(self):
+        assert (
+            agentnanny.matches_allow(
+                "mcp__file_system__write_file",
+                {"path": "/private/tmp/sieve-runtime-contract-pr.md"},
+                ["Write(/private/tmp/*)"],
+            )
+            is True
+        )
+
     def test_no_match(self):
         assert agentnanny.matches_allow("Bash", {}, ["Read", "Write"]) is False
 
@@ -1440,6 +1487,28 @@ class TestHandleHookScoped:
         result = json.loads(raw)
         assert result["hookSpecificOutput"]["decision"]["behavior"] == "allow"
 
+    def test_scope_valid_policy_allows_mcp_write_file(self):
+        """Codex MCP filesystem writes map to the filesystem group."""
+        policy = {
+            "scope_id": "be001234",
+            "allow_groups": ["filesystem"],
+            "allow_tools": [],
+            "deny": [],
+        }
+        raw = self._run_hook_scoped(
+            {
+                "tool_name": "mcp__file-system__write_file",
+                "tool_input": {
+                    "path": "/private/tmp/sieve-runtime-contract-pr.md",
+                    "content": "## Summary\n",
+                },
+            },
+            scope_id="be001234",
+            policy=policy,
+        )
+        result = json.loads(raw)
+        assert result["hookSpecificOutput"]["decision"]["behavior"] == "allow"
+
     def test_scope_tool_not_in_allow_passthrough(self):
         """Tool not in session allow list → passthrough (empty output)."""
         policy = {
@@ -1484,6 +1553,26 @@ class TestHandleHookScoped:
             scope_id="be001234",
             policy=policy,
             global_deny=["Bash(rm*)"],
+        )
+        result = json.loads(raw)
+        assert result["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+
+    def test_scope_global_deny_blocks_mcp_write_file(self):
+        """Deny rules use the canonical filesystem tool and MCP path."""
+        policy = {
+            "scope_id": "be001234",
+            "allow_groups": ["filesystem"],
+            "allow_tools": [],
+            "deny": [],
+        }
+        raw = self._run_hook_scoped(
+            {
+                "tool_name": "mcp__file-system__write_file",
+                "tool_input": {"path": "/etc/passwd", "content": "x"},
+            },
+            scope_id="be001234",
+            policy=policy,
+            global_deny=["Write(/etc/*)"],
         )
         result = json.loads(raw)
         assert result["hookSpecificOutput"]["decision"]["behavior"] == "deny"
@@ -2896,6 +2985,30 @@ class TestEvaluatePolicy:
         assert verdict == "allow"
         assert "allowed by session" in reason
 
+    def test_session_group_allows_mcp_write_file(self, tmp_path):
+        scope_id = "aa11cc33"
+        policy = {
+            "scope_id": scope_id,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": 0,
+            "allow_tools": [],
+            "allow_groups": ["filesystem"],
+            "deny": [],
+        }
+        session_dir = tmp_path / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"{scope_id}.json").write_text(json.dumps(policy))
+        cfg = {"hooks": {}, "groups": {"filesystem": ["Read", "Write", "Edit"]}}
+        with patch.object(agentnanny, "SESSION_DIR", session_dir):
+            verdict, reason = agentnanny.evaluate_policy(
+                "mcp__file-system__write_file",
+                {"path": "/private/tmp/sieve-runtime-contract-pr.md"},
+                cfg,
+                scope_id,
+            )
+        assert verdict == "allow"
+        assert "allowed by session" in reason
+
     def test_passthrough_no_scope(self):
         cfg = {"hooks": {}}
         verdict, reason = agentnanny.evaluate_policy("Bash", {}, cfg, None)
@@ -3563,7 +3676,7 @@ class TestInstallUninstallCodex:
         assert "agentnanny" in content
         assert "PermissionRequest" in content
         assert "PostToolUse" in content
-        assert "codex_hooks = true" in content
+        assert "hooks = true" in content
         assert "codex-hook" not in content
 
     def test_install_idempotent(self, tmp_path):
@@ -3628,6 +3741,73 @@ class TestInstallUninstallCodex:
         content = config_path.read_text(encoding="utf-8")
         assert "notify" not in content
         assert "PermissionRequest" in content
+
+    def test_install_force_replaces_markerless_hooks(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        script_path = str(agentnanny.SCRIPT_PATH)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[[hooks.PermissionRequest]]",
+                    "",
+                    "[[hooks.PermissionRequest.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} hook"',
+                    "",
+                    "[[hooks.PostToolUse]]",
+                    "",
+                    "[[hooks.PostToolUse.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} post-hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny.install_codex_hooks(force=True)
+
+        content = config_path.read_text(encoding="utf-8")
+        assert content.count("[[hooks.PermissionRequest]]") == 1
+        assert content.count("[[hooks.PostToolUse]]") == 1
+        assert agentnanny.CODEX_HOOK_MARKER_START in content
+
+    def test_uninstall_removes_markerless_hooks(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        script_path = str(agentnanny.SCRIPT_PATH)
+        config_path.write_text(
+            "\n".join(
+                [
+                    'model = "o3"',
+                    "",
+                    "[[hooks.PermissionRequest]]",
+                    "",
+                    "[[hooks.PermissionRequest.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny.uninstall_codex_hooks()
+
+        content = config_path.read_text(encoding="utf-8")
+        assert 'model = "o3"' in content
+        assert "PermissionRequest" not in content
 
     def test_uninstall_no_config_exits(self, tmp_path):
         config_path = tmp_path / "nonexistent.toml"
@@ -3721,9 +3901,11 @@ class TestApplyRemoveCodexSession:
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "on-request"' in content
 
-    def test_apply_full_dev_sets_never(self, tmp_path):
+    def test_apply_full_dev_sets_never_and_full_access_sandbox(self, tmp_path):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "config.toml"
+        config_path.parent.mkdir()
+        config_path.write_text('sandbox_mode = "workspace-write"\n', encoding="utf-8")
         cfg = self._make_cfg()
         policy = {
             "_profile_name": "full-dev",
@@ -3740,7 +3922,9 @@ class TestApplyRemoveCodexSession:
 
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "never"' in content
+        assert 'sandbox_mode = "danger-full-access"' in content
         assert state["previous_approval_policy"] is None
+        assert state["previous_sandbox_mode"] == "workspace-write"
 
     def test_apply_suspends_mcp_approval_modes(self, tmp_path):
         codex_home = tmp_path / ".codex"
@@ -3779,6 +3963,7 @@ class TestApplyRemoveCodexSession:
 
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "never"' in content
+        assert 'sandbox_mode = "danger-full-access"' in content
         assert "[mcp_servers.git-tools.tools.git_status]" in content
         assert "[mcp_servers.tavily-remote-mcp.tools.tavily_map]" in content
         assert 'approval_mode = "approve"' not in content
@@ -3790,6 +3975,31 @@ class TestApplyRemoveCodexSession:
                 "approval_mode": '"approve"'
             },
         }
+
+    def test_apply_prunes_stale_rules(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        config_path = codex_home / "config.toml"
+        rules_dir = codex_home / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "agentnanny-stale123.rules").write_text("# stale\n")
+        (rules_dir / "agentnanny-abc12345.rules").write_text("# current\n")
+        cfg = self._make_cfg()
+        policy = {
+            "_profile_name": "safe-dev",
+            "deny": [],
+            "allow_groups": ["filesystem", "safe-shell"],
+            "allow_tools": [],
+        }
+
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny._apply_codex_session(policy, cfg, "abc12345")
+
+        assert not (rules_dir / "agentnanny-stale123.rules").exists()
+        assert (rules_dir / "agentnanny-abc12345.rules").exists()
 
     def test_apply_generates_deny_rules(self, tmp_path):
         codex_home = tmp_path / ".codex"
@@ -3865,6 +4075,7 @@ class TestApplyRemoveCodexSession:
             "\n".join(
                 [
                     'approval_policy = "never"',
+                    'sandbox_mode = "danger-full-access"',
                     "",
                     "[mcp_servers.git-tools.tools.git_status]",
                     "",
@@ -3885,6 +4096,7 @@ class TestApplyRemoveCodexSession:
                 "abc12345",
                 {
                     "previous_approval_policy": "unless-trusted",
+                    "previous_sandbox_mode": "workspace-write",
                     "suspended_mcp_approval_modes": {
                         "mcp_servers.git-tools.tools.git_status": {
                             "approval_mode": '"approve"'
@@ -3895,6 +4107,7 @@ class TestApplyRemoveCodexSession:
 
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "unless-trusted"' in content
+        assert 'sandbox_mode = "workspace-write"' in content
         assert "[mcp_servers.git-tools.tools.git_status]" in content
         assert 'approval_mode = "approve"' in content
 
@@ -3986,6 +4199,12 @@ class TestCodexApprovalMap:
         for name, policy in agentnanny.CODEX_APPROVAL_MAP.items():
             assert policy in valid, f"{name} maps to invalid policy {policy!r}"
 
+    def test_sandbox_values_are_valid_codex_modes(self):
+        valid = {"read-only", "workspace-write", "danger-full-access"}
+        for name, sandbox in agentnanny.CODEX_SANDBOX_MAP.items():
+            assert name in agentnanny.BUILTIN_PROFILES
+            assert sandbox in valid, f"{name} maps to invalid sandbox {sandbox!r}"
+
 
 class TestBuildPolicy:
     def test_includes_profile_name(self):
@@ -4025,6 +4244,7 @@ class TestCodexStatus:
         config_path = codex_home / "config.toml"
         config_path.write_text(
             'approval_policy = "never"\n'
+            'sandbox_mode = "danger-full-access"\n'
             f"{agentnanny.CODEX_HOOK_MARKER_START}\n"
             "[[hooks.PermissionRequest]]\n"
             f"{agentnanny.CODEX_HOOK_MARKER_END}\n",
@@ -4045,6 +4265,45 @@ class TestCodexStatus:
         assert "Codex CLI" in err
         assert "Lifecycle hooks installed: yes" in err
         assert "Approval policy: never" in err
+        assert "Sandbox mode: danger-full-access" in err
+
+    def test_shows_markerless_codex_hooks_installed(self, tmp_path, capsys):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        script_path = str(agentnanny.SCRIPT_PATH)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[[hooks.PermissionRequest]]",
+                    "",
+                    "[[hooks.PermissionRequest.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} hook"',
+                    "",
+                    "[[hooks.PostToolUse]]",
+                    "",
+                    "[[hooks.PostToolUse.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} post-hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "SETTINGS_PATH", tmp_path / "nonexistent.json"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("AGENTNANNY_SCOPE", None)
+            agentnanny.show_status()
+
+        out = capsys.readouterr().out
+        assert "Lifecycle hooks installed: yes" in out
 
     def test_shows_codex_not_installed(self, tmp_path, capsys):
         codex_home = tmp_path / ".codex"

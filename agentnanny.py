@@ -43,13 +43,20 @@ CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
 # Supported targets
 TARGETS = ("claude", "codex")
 
-# Map agentnanny profiles to Codex approval_policy values
+# Map agentnanny profiles to Codex approval_policy values.
 CODEX_APPROVAL_MAP: dict[str, str] = {
     "reviewer": "on-request",
     "safe-dev": "on-request",
     "full-dev": "never",
     "overnight": "never",
     "ci-runner": "never",
+}
+
+# Map profiles to Codex sandbox modes. Codex workspace-write blocks .git metadata
+# mutations; full-dev is explicitly the trusted local-work profile.
+CODEX_SANDBOX_MAP: dict[str, str] = {
+    "full-dev": "danger-full-access",
+    "overnight": "danger-full-access",
 }
 
 # ---------------------------------------------------------------------------
@@ -76,6 +83,23 @@ BUILTIN_GROUPS: dict[str, list[str]] = {
     ],
     "network": ["WebFetch", "WebSearch"],
     "all": [".*"],
+}
+
+MCP_FILESYSTEM_TOOL_MAP: dict[str, str] = {
+    "create_directory": "Write",
+    "directory_tree": "Read",
+    "edit_file": "Edit",
+    "get_file_info": "Read",
+    "list_allowed_directories": "Read",
+    "list_directory": "Read",
+    "list_directory_with_sizes": "Read",
+    "move_file": "Edit",
+    "read_file": "Read",
+    "read_media_file": "Read",
+    "read_multiple_files": "Read",
+    "read_text_file": "Read",
+    "search_files": "Grep",
+    "write_file": "Write",
 }
 
 BUILTIN_PROFILES: dict[str, dict] = {
@@ -266,6 +290,30 @@ def _glob_to_regex(pattern: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _mcp_tool_parts(tool_name: str) -> tuple[str, str] | None:
+    """Return (server, tool) for Codex MCP tool names."""
+    if not tool_name.startswith("mcp__"):
+        return None
+    parts = tool_name.split("__", 2)
+    if len(parts) != 3 or not parts[1] or not parts[2]:
+        return None
+    return (parts[1], parts[2])
+
+
+def _policy_tool_name(tool_name: str) -> str:
+    """Map external tool names onto agentnanny's policy vocabulary."""
+    mcp_parts = _mcp_tool_parts(tool_name)
+    if mcp_parts is None:
+        return tool_name
+
+    server_name, mcp_tool = mcp_parts
+    normalized_server = server_name.replace("-", "_")
+    if normalized_server in {"file_system", "filesystem"}:
+        return MCP_FILESYSTEM_TOOL_MAP.get(mcp_tool, tool_name)
+
+    return tool_name
+
+
 def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool:
     """Check if a tool call matches any deny pattern.
 
@@ -275,12 +323,14 @@ def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool
         "Bash(rm -rf*)"     — tool name + command prefix
         ".*dangerous.*"     — regex against tool_name
     """
+    policy_tool_name = _policy_tool_name(tool_name)
+    tool_names = {tool_name, policy_tool_name}
     for pattern in deny_list:
         # Pattern with tool_input filter: ToolName(input_pattern)
         m = re.match(r"^(\w+)\((.+)\)$", pattern)
         if m:
             pat_tool, pat_input = m.group(1), m.group(2)
-            if pat_tool != tool_name:
+            if pat_tool != policy_tool_name:
                 continue
             # Match against the primary input field (command for Bash, etc.)
             input_str = _primary_input(tool_name, tool_input)
@@ -289,11 +339,12 @@ def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool
                 return True
         else:
             # Plain pattern — match against tool_name
-            if pattern == tool_name:
+            if pattern in tool_names:
                 return True
             try:
-                if re.fullmatch(pattern, tool_name):
-                    return True
+                for name in tool_names:
+                    if re.fullmatch(pattern, name):
+                        return True
             except re.error:
                 pass
     return False
@@ -301,15 +352,32 @@ def matches_deny(tool_name: str, tool_input: dict, deny_list: list[str]) -> bool
 
 def _primary_input(tool_name: str, tool_input: dict) -> str:
     """Extract the primary input string for a tool call."""
-    if tool_name == "Bash":
+    mcp_parts = _mcp_tool_parts(tool_name)
+    if mcp_parts is not None:
+        _server_name, mcp_tool = mcp_parts
+        if mcp_tool == "move_file":
+            return " ".join(
+                str(tool_input.get(field, ""))
+                for field in ("source", "destination")
+                if tool_input.get(field)
+            )
+        if mcp_tool == "read_multiple_files":
+            return " ".join(str(path) for path in tool_input.get("paths", []))
+        if "path" in tool_input:
+            return str(tool_input.get("path", ""))
+        if "url" in tool_input:
+            return str(tool_input.get("url", ""))
+
+    policy_tool_name = _policy_tool_name(tool_name)
+    if policy_tool_name == "Bash":
         return tool_input.get("command", "")
-    if tool_name == "Write":
+    if policy_tool_name == "Write":
         return tool_input.get("file_path", "")
-    if tool_name == "Edit":
+    if policy_tool_name == "Edit":
         return tool_input.get("file_path", "")
-    if tool_name == "Read":
+    if policy_tool_name == "Read":
         return tool_input.get("file_path", "")
-    if tool_name == "WebFetch":
+    if policy_tool_name == "WebFetch":
         return tool_input.get("url", "")
     # Fallback: join all values
     return " ".join(str(v) for v in tool_input.values())
@@ -459,22 +527,25 @@ def matches_allow(tool_name: str, tool_input: dict, allow_patterns: list[str]) -
         "Bash(ls*)"         — tool name + input pattern
         ".*"                — regex wildcard (match all)
     """
+    policy_tool_name = _policy_tool_name(tool_name)
+    tool_names = {tool_name, policy_tool_name}
     for pattern in allow_patterns:
         m = re.match(r"^(\w+)\((.+)\)$", pattern)
         if m:
             pat_tool, pat_input = m.group(1), m.group(2)
-            if pat_tool != tool_name:
+            if pat_tool != policy_tool_name:
                 continue
             input_str = _primary_input(tool_name, tool_input)
             regex = _glob_to_regex(pat_input)
             if re.match(regex, input_str):
                 return True
         else:
-            if pattern == tool_name:
+            if pattern in tool_names:
                 return True
             try:
-                if re.fullmatch(pattern, tool_name):
-                    return True
+                for name in tool_names:
+                    if re.fullmatch(pattern, name):
+                        return True
             except re.error:
                 pass
     return False
@@ -906,6 +977,46 @@ def _strip_codex_agentnanny_hook_block(lines: list[str]) -> tuple[list[str], boo
     return new_lines, removed
 
 
+def _strip_codex_agentnanny_hook_tables(lines: list[str]) -> tuple[list[str], bool]:
+    """Remove markerless Codex hook tables that invoke this agentnanny script."""
+    script_path = str(SCRIPT_PATH).replace("\\", "/")
+    hook_headers = ("[[hooks.PermissionRequest]]", "[[hooks.PostToolUse]]")
+    new_lines: list[str] = []
+    removed = False
+    index = 0
+
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped not in hook_headers:
+            new_lines.append(lines[index])
+            index += 1
+            continue
+
+        block: list[str] = [lines[index]]
+        event_prefix = stripped.removeprefix("[[").removesuffix("]]")
+        index += 1
+        while index < len(lines):
+            next_stripped = lines[index].strip()
+            if next_stripped in hook_headers:
+                break
+            if (
+                next_stripped.startswith("[")
+                and next_stripped.endswith("]")
+                and not next_stripped.startswith(f"[[{event_prefix}.")
+            ):
+                break
+            block.append(lines[index])
+            index += 1
+
+        block_text = "\n".join(block)
+        if HOOK_MARKER in block_text or script_path in block_text:
+            removed = True
+            continue
+        new_lines.extend(block)
+
+    return new_lines, removed
+
+
 def _strip_codex_legacy_notify(lines: list[str]) -> tuple[list[str], bool]:
     """Remove legacy agentnanny notify lines, including misplaced table-scoped ones."""
     new_lines: list[str] = []
@@ -960,7 +1071,16 @@ def _codex_hooks_installed() -> bool:
     if not CODEX_CONFIG_PATH.exists():
         return False
     text = CODEX_CONFIG_PATH.read_text(encoding="utf-8")
-    return CODEX_HOOK_MARKER_START in text and CODEX_HOOK_MARKER_END in text
+    if CODEX_HOOK_MARKER_START in text and CODEX_HOOK_MARKER_END in text:
+        return True
+    script_path = str(SCRIPT_PATH).replace("\\", "/")
+    return (
+        "[[hooks.PermissionRequest]]" in text
+        and "[[hooks.PostToolUse]]" in text
+        and script_path in text
+        and " hook" in text
+        and " post-hook" in text
+    )
 
 
 def install_codex_hooks(*, force: bool = False):
@@ -976,12 +1096,13 @@ def install_codex_hooks(*, force: bool = False):
     if CODEX_CONFIG_PATH.exists():
         lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
     lines, _ = _strip_codex_agentnanny_hook_block(lines)
+    lines, _ = _strip_codex_agentnanny_hook_tables(lines)
     lines, _ = _strip_codex_legacy_notify(lines)
     if lines and lines[-1].strip():
         lines.append("")
     lines.extend(_codex_hook_block().splitlines())
     CODEX_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    _patch_codex_table("features", {"codex_hooks": True})
+    _patch_codex_table("features", {"hooks": True})
     print(f"Installed Codex lifecycle hooks in {CODEX_CONFIG_PATH}")
 
 
@@ -993,8 +1114,9 @@ def uninstall_codex_hooks():
 
     lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
     lines, removed_block = _strip_codex_agentnanny_hook_block(lines)
+    lines, removed_tables = _strip_codex_agentnanny_hook_tables(lines)
     lines, removed_notify = _strip_codex_legacy_notify(lines)
-    removed = removed_block or removed_notify
+    removed = removed_block or removed_tables or removed_notify
     if not removed:
         print("No agentnanny hooks found in Codex config", file=sys.stderr)
         raise SystemExit(1)
@@ -1028,14 +1150,25 @@ def handle_codex_hook():
 
 def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
     """Apply an agentnanny session policy to Codex config and rules."""
-    # Determine approval_policy from profile or groups
     profile_name = policy.get("_profile_name")
     approval = CODEX_APPROVAL_MAP.get(profile_name or "", "on-request")
+    sandbox_mode = CODEX_SANDBOX_MAP.get(profile_name or "")
 
     previous_approval = _get_codex_top_level_value("approval_policy")
+    previous_sandbox_mode = _get_codex_top_level_value("sandbox_mode")
     updates: dict[str, object] = {"approval_policy": approval}
+    if sandbox_mode:
+        updates["sandbox_mode"] = sandbox_mode
     _patch_codex_config(updates)
     suspended_mcp_modes = _suspend_codex_mcp_approval_prompts()
+    stale_rules = _prune_stale_codex_rules(
+        {
+            str(active.get("scope_id"))
+            for active in list_session_policies()
+            if _valid_scope_id(str(active.get("scope_id", "")))
+        }
+        | {scope_id}
+    )
 
     # Generate exec policy rules from deny + allow patterns
     deny_patterns = policy.get("deny", [])
@@ -1063,6 +1196,10 @@ def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
         print(f"# Codex rules: {path}", file=sys.stderr)
 
     print(f"# Codex approval_policy: {approval}", file=sys.stderr)
+    if sandbox_mode:
+        print(f"# Codex sandbox_mode: {sandbox_mode}", file=sys.stderr)
+    if stale_rules:
+        print(f"# Pruned stale Codex rules: {stale_rules}", file=sys.stderr)
     if suspended_mcp_modes:
         print(
             f"# Suspended MCP approval prompts: {len(suspended_mcp_modes)}",
@@ -1070,6 +1207,7 @@ def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
         )
     return {
         "previous_approval_policy": previous_approval,
+        "previous_sandbox_mode": previous_sandbox_mode,
         "suspended_mcp_approval_modes": suspended_mcp_modes,
     }
 
@@ -1084,6 +1222,12 @@ def _remove_codex_session(scope_id: str, prior_state: dict | None = None):
         _remove_codex_config_keys(["approval_policy"])
     else:
         _patch_codex_config({"approval_policy": previous_approval})
+    if prior_state is not None and "previous_sandbox_mode" in prior_state:
+        previous_sandbox_mode = prior_state.get("previous_sandbox_mode")
+        if previous_sandbox_mode is None:
+            _remove_codex_config_keys(["sandbox_mode"])
+        else:
+            _patch_codex_config({"sandbox_mode": previous_sandbox_mode})
     suspended_mcp_modes = (
         {}
         if prior_state is None
@@ -1171,7 +1315,7 @@ def handle_hook():
             # No scope, no allow list → passthrough to normal permission dialog
             return
         # Explicit allow list set → enforce it
-        if tool_name not in allow_list:
+        if not matches_allow(tool_name, tool_input, allow_list):
             _hook_deny(tool_name, f"{tool_name} not in allow list", cfg)
             return
         detail = _primary_input(tool_name, tool_input)[:200]
@@ -2012,6 +2156,9 @@ def show_status():
         ap = _get_codex_top_level_value("approval_policy")
         if ap:
             print(f"Approval policy: {ap}")
+        sandbox = _get_codex_top_level_value("sandbox_mode")
+        if sandbox:
+            print(f"Sandbox mode: {sandbox}")
     else:
         print("Lifecycle hooks installed: no (no config file)")
 
@@ -2538,7 +2685,7 @@ def evaluate_policy(
         allow_list = cfg.get("hooks", {}).get("allow", None)
         if allow_list is None:
             return ("passthrough", "no scope and no allow list configured")
-        if tool_name in allow_list:
+        if matches_allow(tool_name, tool_input, allow_list):
             return ("allow", f"{tool_name} in legacy allow list")
         return ("deny", f"{tool_name} not in legacy allow list")
 

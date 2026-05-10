@@ -126,17 +126,17 @@ python agentnanny.py activate safe-dev --target codex
 python agentnanny.py deactivate --target codex
 ```
 
-Profile-to-Codex approval policy mapping:
+Profile-to-Codex permission mapping:
 
-| Profile | approval_policy |
-|---|---|
-| reviewer | on-request |
-| safe-dev | on-request |
-| full-dev | never |
-| overnight | never |
-| ci-runner | never |
+| Profile | approval_policy | sandbox_mode override |
+|---|---|---|
+| reviewer | on-request | — |
+| safe-dev | on-request | — |
+| full-dev | never | danger-full-access |
+| overnight | never | danger-full-access |
+| ci-runner | never | — |
 
-Deny/allow `Bash(...)` patterns translate to Codex Starlark `prefix_rule()` directives in `~/.codex/rules/`. Multi-word command prefixes are emitted as argv-token prefixes, for example `Bash(git push --force*)` becomes `pattern=["git", "push", "--force"]`. Non-Bash patterns are skipped because Codex governs native tool execution through `approval_policy`. When activating a Codex-targeted session, agentnanny also suspends explicit MCP `approval_mode` and `approval_policy` overrides in `~/.codex/config.toml` for the lifetime of the session so those tools fall back to the active top-level policy, then restores the prior MCP settings on deactivate.
+Deny/allow `Bash(...)` patterns translate to Codex Starlark `prefix_rule()` directives in `~/.codex/rules/`. Multi-word command prefixes are emitted as argv-token prefixes, for example `Bash(git push --force*)` becomes `pattern=["git", "push", "--force"]`. Non-Bash patterns are skipped because Codex governs native tool execution through `approval_policy`. When activating a Codex-targeted session, agentnanny prunes stale generated rule files, suspends explicit MCP `approval_mode` and `approval_policy` overrides in `~/.codex/config.toml` for the lifetime of the session so those tools fall back to the active top-level policy, then restores the prior MCP settings and sandbox mode on deactivate. `full-dev` and `overnight` set `danger-full-access` because Codex `workspace-write` blocks `.git` metadata writes needed for branch creation, commits, and other local Git operations.
 
 ### Requirements
 
