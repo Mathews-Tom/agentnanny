@@ -3834,9 +3834,11 @@ class TestApplyRemoveCodexSession:
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "on-request"' in content
 
-    def test_apply_full_dev_sets_never(self, tmp_path):
+    def test_apply_full_dev_sets_never_and_full_access_sandbox(self, tmp_path):
         codex_home = tmp_path / ".codex"
         config_path = codex_home / "config.toml"
+        config_path.parent.mkdir()
+        config_path.write_text('sandbox_mode = "workspace-write"\n', encoding="utf-8")
         cfg = self._make_cfg()
         policy = {
             "_profile_name": "full-dev",
@@ -3853,7 +3855,9 @@ class TestApplyRemoveCodexSession:
 
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "never"' in content
+        assert 'sandbox_mode = "danger-full-access"' in content
         assert state["previous_approval_policy"] is None
+        assert state["previous_sandbox_mode"] == "workspace-write"
 
     def test_apply_suspends_mcp_approval_modes(self, tmp_path):
         codex_home = tmp_path / ".codex"
@@ -3892,6 +3896,7 @@ class TestApplyRemoveCodexSession:
 
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "never"' in content
+        assert 'sandbox_mode = "danger-full-access"' in content
         assert "[mcp_servers.git-tools.tools.git_status]" in content
         assert "[mcp_servers.tavily-remote-mcp.tools.tavily_map]" in content
         assert 'approval_mode = "approve"' not in content
@@ -3903,6 +3908,31 @@ class TestApplyRemoveCodexSession:
                 "approval_mode": '"approve"'
             },
         }
+
+    def test_apply_prunes_stale_rules(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        config_path = codex_home / "config.toml"
+        rules_dir = codex_home / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "agentnanny-stale123.rules").write_text("# stale\n")
+        (rules_dir / "agentnanny-abc12345.rules").write_text("# current\n")
+        cfg = self._make_cfg()
+        policy = {
+            "_profile_name": "safe-dev",
+            "deny": [],
+            "allow_groups": ["filesystem", "safe-shell"],
+            "allow_tools": [],
+        }
+
+        with (
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny._apply_codex_session(policy, cfg, "abc12345")
+
+        assert not (rules_dir / "agentnanny-stale123.rules").exists()
+        assert (rules_dir / "agentnanny-abc12345.rules").exists()
 
     def test_apply_generates_deny_rules(self, tmp_path):
         codex_home = tmp_path / ".codex"
@@ -3978,6 +4008,7 @@ class TestApplyRemoveCodexSession:
             "\n".join(
                 [
                     'approval_policy = "never"',
+                    'sandbox_mode = "danger-full-access"',
                     "",
                     "[mcp_servers.git-tools.tools.git_status]",
                     "",
@@ -3998,6 +4029,7 @@ class TestApplyRemoveCodexSession:
                 "abc12345",
                 {
                     "previous_approval_policy": "unless-trusted",
+                    "previous_sandbox_mode": "workspace-write",
                     "suspended_mcp_approval_modes": {
                         "mcp_servers.git-tools.tools.git_status": {
                             "approval_mode": '"approve"'
@@ -4008,6 +4040,7 @@ class TestApplyRemoveCodexSession:
 
         content = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "unless-trusted"' in content
+        assert 'sandbox_mode = "workspace-write"' in content
         assert "[mcp_servers.git-tools.tools.git_status]" in content
         assert 'approval_mode = "approve"' in content
 
@@ -4099,6 +4132,12 @@ class TestCodexApprovalMap:
         for name, policy in agentnanny.CODEX_APPROVAL_MAP.items():
             assert policy in valid, f"{name} maps to invalid policy {policy!r}"
 
+    def test_sandbox_values_are_valid_codex_modes(self):
+        valid = {"read-only", "workspace-write", "danger-full-access"}
+        for name, sandbox in agentnanny.CODEX_SANDBOX_MAP.items():
+            assert name in agentnanny.BUILTIN_PROFILES
+            assert sandbox in valid, f"{name} maps to invalid sandbox {sandbox!r}"
+
 
 class TestBuildPolicy:
     def test_includes_profile_name(self):
@@ -4138,6 +4177,7 @@ class TestCodexStatus:
         config_path = codex_home / "config.toml"
         config_path.write_text(
             'approval_policy = "never"\n'
+            'sandbox_mode = "danger-full-access"\n'
             f"{agentnanny.CODEX_HOOK_MARKER_START}\n"
             "[[hooks.PermissionRequest]]\n"
             f"{agentnanny.CODEX_HOOK_MARKER_END}\n",

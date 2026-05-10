@@ -43,13 +43,20 @@ CODEX_CONFIG_PATH = CODEX_HOME / "config.toml"
 # Supported targets
 TARGETS = ("claude", "codex")
 
-# Map agentnanny profiles to Codex approval_policy values
+# Map agentnanny profiles to Codex approval_policy values.
 CODEX_APPROVAL_MAP: dict[str, str] = {
     "reviewer": "on-request",
     "safe-dev": "on-request",
     "full-dev": "never",
     "overnight": "never",
     "ci-runner": "never",
+}
+
+# Map profiles to Codex sandbox modes. Codex workspace-write blocks .git metadata
+# mutations; full-dev is explicitly the trusted local-work profile.
+CODEX_SANDBOX_MAP: dict[str, str] = {
+    "full-dev": "danger-full-access",
+    "overnight": "danger-full-access",
 }
 
 # ---------------------------------------------------------------------------
@@ -1092,14 +1099,25 @@ def handle_codex_hook():
 
 def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
     """Apply an agentnanny session policy to Codex config and rules."""
-    # Determine approval_policy from profile or groups
     profile_name = policy.get("_profile_name")
     approval = CODEX_APPROVAL_MAP.get(profile_name or "", "on-request")
+    sandbox_mode = CODEX_SANDBOX_MAP.get(profile_name or "")
 
     previous_approval = _get_codex_top_level_value("approval_policy")
+    previous_sandbox_mode = _get_codex_top_level_value("sandbox_mode")
     updates: dict[str, object] = {"approval_policy": approval}
+    if sandbox_mode:
+        updates["sandbox_mode"] = sandbox_mode
     _patch_codex_config(updates)
     suspended_mcp_modes = _suspend_codex_mcp_approval_prompts()
+    stale_rules = _prune_stale_codex_rules(
+        {
+            str(active.get("scope_id"))
+            for active in list_session_policies()
+            if _valid_scope_id(str(active.get("scope_id", "")))
+        }
+        | {scope_id}
+    )
 
     # Generate exec policy rules from deny + allow patterns
     deny_patterns = policy.get("deny", [])
@@ -1127,6 +1145,10 @@ def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
         print(f"# Codex rules: {path}", file=sys.stderr)
 
     print(f"# Codex approval_policy: {approval}", file=sys.stderr)
+    if sandbox_mode:
+        print(f"# Codex sandbox_mode: {sandbox_mode}", file=sys.stderr)
+    if stale_rules:
+        print(f"# Pruned stale Codex rules: {stale_rules}", file=sys.stderr)
     if suspended_mcp_modes:
         print(
             f"# Suspended MCP approval prompts: {len(suspended_mcp_modes)}",
@@ -1134,6 +1156,7 @@ def _apply_codex_session(policy: dict, cfg: dict, scope_id: str) -> dict:
         )
     return {
         "previous_approval_policy": previous_approval,
+        "previous_sandbox_mode": previous_sandbox_mode,
         "suspended_mcp_approval_modes": suspended_mcp_modes,
     }
 
@@ -1148,6 +1171,12 @@ def _remove_codex_session(scope_id: str, prior_state: dict | None = None):
         _remove_codex_config_keys(["approval_policy"])
     else:
         _patch_codex_config({"approval_policy": previous_approval})
+    if prior_state is not None and "previous_sandbox_mode" in prior_state:
+        previous_sandbox_mode = prior_state.get("previous_sandbox_mode")
+        if previous_sandbox_mode is None:
+            _remove_codex_config_keys(["sandbox_mode"])
+        else:
+            _patch_codex_config({"sandbox_mode": previous_sandbox_mode})
     suspended_mcp_modes = (
         {}
         if prior_state is None
@@ -2076,6 +2105,9 @@ def show_status():
         ap = _get_codex_top_level_value("approval_policy")
         if ap:
             print(f"Approval policy: {ap}")
+        sandbox = _get_codex_top_level_value("sandbox_mode")
+        if sandbox:
+            print(f"Sandbox mode: {sandbox}")
     else:
         print("Lifecycle hooks installed: no (no config file)")
 
