@@ -3676,7 +3676,7 @@ class TestInstallUninstallCodex:
         assert "agentnanny" in content
         assert "PermissionRequest" in content
         assert "PostToolUse" in content
-        assert "codex_hooks = true" in content
+        assert "hooks = true" in content
         assert "codex-hook" not in content
 
     def test_install_idempotent(self, tmp_path):
@@ -3741,6 +3741,73 @@ class TestInstallUninstallCodex:
         content = config_path.read_text(encoding="utf-8")
         assert "notify" not in content
         assert "PermissionRequest" in content
+
+    def test_install_force_replaces_markerless_hooks(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        script_path = str(agentnanny.SCRIPT_PATH)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[[hooks.PermissionRequest]]",
+                    "",
+                    "[[hooks.PermissionRequest.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} hook"',
+                    "",
+                    "[[hooks.PostToolUse]]",
+                    "",
+                    "[[hooks.PostToolUse.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} post-hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny.install_codex_hooks(force=True)
+
+        content = config_path.read_text(encoding="utf-8")
+        assert content.count("[[hooks.PermissionRequest]]") == 1
+        assert content.count("[[hooks.PostToolUse]]") == 1
+        assert agentnanny.CODEX_HOOK_MARKER_START in content
+
+    def test_uninstall_removes_markerless_hooks(self, tmp_path):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        script_path = str(agentnanny.SCRIPT_PATH)
+        config_path.write_text(
+            "\n".join(
+                [
+                    'model = "o3"',
+                    "",
+                    "[[hooks.PermissionRequest]]",
+                    "",
+                    "[[hooks.PermissionRequest.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+        ):
+            agentnanny.uninstall_codex_hooks()
+
+        content = config_path.read_text(encoding="utf-8")
+        assert 'model = "o3"' in content
+        assert "PermissionRequest" not in content
 
     def test_uninstall_no_config_exits(self, tmp_path):
         config_path = tmp_path / "nonexistent.toml"
@@ -4198,6 +4265,45 @@ class TestCodexStatus:
         assert "Codex CLI" in err
         assert "Lifecycle hooks installed: yes" in err
         assert "Approval policy: never" in err
+        assert "Sandbox mode: danger-full-access" in err
+
+    def test_shows_markerless_codex_hooks_installed(self, tmp_path, capsys):
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        config_path = codex_home / "config.toml"
+        script_path = str(agentnanny.SCRIPT_PATH)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[[hooks.PermissionRequest]]",
+                    "",
+                    "[[hooks.PermissionRequest.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} hook"',
+                    "",
+                    "[[hooks.PostToolUse]]",
+                    "",
+                    "[[hooks.PostToolUse.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {script_path} post-hook"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(agentnanny, "SETTINGS_PATH", tmp_path / "nonexistent.json"),
+            patch.object(agentnanny, "CODEX_HOME", codex_home),
+            patch.object(agentnanny, "CODEX_CONFIG_PATH", config_path),
+            patch.object(agentnanny, "SESSION_DIR", tmp_path / "sessions"),
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("AGENTNANNY_SCOPE", None)
+            agentnanny.show_status()
+
+        out = capsys.readouterr().out
+        assert "Lifecycle hooks installed: yes" in out
 
     def test_shows_codex_not_installed(self, tmp_path, capsys):
         codex_home = tmp_path / ".codex"

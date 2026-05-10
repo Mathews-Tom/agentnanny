@@ -977,6 +977,46 @@ def _strip_codex_agentnanny_hook_block(lines: list[str]) -> tuple[list[str], boo
     return new_lines, removed
 
 
+def _strip_codex_agentnanny_hook_tables(lines: list[str]) -> tuple[list[str], bool]:
+    """Remove markerless Codex hook tables that invoke this agentnanny script."""
+    script_path = str(SCRIPT_PATH).replace("\\", "/")
+    hook_headers = ("[[hooks.PermissionRequest]]", "[[hooks.PostToolUse]]")
+    new_lines: list[str] = []
+    removed = False
+    index = 0
+
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped not in hook_headers:
+            new_lines.append(lines[index])
+            index += 1
+            continue
+
+        block: list[str] = [lines[index]]
+        event_prefix = stripped.removeprefix("[[").removesuffix("]]")
+        index += 1
+        while index < len(lines):
+            next_stripped = lines[index].strip()
+            if next_stripped in hook_headers:
+                break
+            if (
+                next_stripped.startswith("[")
+                and next_stripped.endswith("]")
+                and not next_stripped.startswith(f"[[{event_prefix}.")
+            ):
+                break
+            block.append(lines[index])
+            index += 1
+
+        block_text = "\n".join(block)
+        if HOOK_MARKER in block_text or script_path in block_text:
+            removed = True
+            continue
+        new_lines.extend(block)
+
+    return new_lines, removed
+
+
 def _strip_codex_legacy_notify(lines: list[str]) -> tuple[list[str], bool]:
     """Remove legacy agentnanny notify lines, including misplaced table-scoped ones."""
     new_lines: list[str] = []
@@ -1031,7 +1071,16 @@ def _codex_hooks_installed() -> bool:
     if not CODEX_CONFIG_PATH.exists():
         return False
     text = CODEX_CONFIG_PATH.read_text(encoding="utf-8")
-    return CODEX_HOOK_MARKER_START in text and CODEX_HOOK_MARKER_END in text
+    if CODEX_HOOK_MARKER_START in text and CODEX_HOOK_MARKER_END in text:
+        return True
+    script_path = str(SCRIPT_PATH).replace("\\", "/")
+    return (
+        "[[hooks.PermissionRequest]]" in text
+        and "[[hooks.PostToolUse]]" in text
+        and script_path in text
+        and " hook" in text
+        and " post-hook" in text
+    )
 
 
 def install_codex_hooks(*, force: bool = False):
@@ -1047,12 +1096,13 @@ def install_codex_hooks(*, force: bool = False):
     if CODEX_CONFIG_PATH.exists():
         lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
     lines, _ = _strip_codex_agentnanny_hook_block(lines)
+    lines, _ = _strip_codex_agentnanny_hook_tables(lines)
     lines, _ = _strip_codex_legacy_notify(lines)
     if lines and lines[-1].strip():
         lines.append("")
     lines.extend(_codex_hook_block().splitlines())
     CODEX_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    _patch_codex_table("features", {"codex_hooks": True})
+    _patch_codex_table("features", {"hooks": True})
     print(f"Installed Codex lifecycle hooks in {CODEX_CONFIG_PATH}")
 
 
@@ -1064,8 +1114,9 @@ def uninstall_codex_hooks():
 
     lines = CODEX_CONFIG_PATH.read_text(encoding="utf-8").splitlines()
     lines, removed_block = _strip_codex_agentnanny_hook_block(lines)
+    lines, removed_tables = _strip_codex_agentnanny_hook_tables(lines)
     lines, removed_notify = _strip_codex_legacy_notify(lines)
-    removed = removed_block or removed_notify
+    removed = removed_block or removed_tables or removed_notify
     if not removed:
         print("No agentnanny hooks found in Codex config", file=sys.stderr)
         raise SystemExit(1)
